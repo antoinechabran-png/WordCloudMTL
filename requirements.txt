@@ -1,0 +1,86 @@
+streamlit>=1.30
+pandas>=2.0
+openpyxl>=3.1
+nltk>=3.8
+networkx>=3.0
+python-louvain>=0.16
+wordcloud>=1.9
+matplotlib>=3.7
+scikit-learn>=1.3
+
+# Optional spelling correction — pure Python, no compiled dependencies,
+# bundled offline dictionaries (no network needed at runtime). Confirmed
+# language coverage includes English, French, Spanish, German, Portuguese;
+# Italian support is not guaranteed — the app degrades gracefully (a
+# warning, not a crash) if a language's dictionary isn't available.
+pyspellchecker>=0.7,<0.8
+
+# Verbatim lemmatization for all 6 supported languages (English included —
+# NLTK's WordNet lemmatizer above is kept only as English's fallback if
+# en_core_web_sm fails to load).
+#
+# spacy>=3.8 specifically (not 3.7.x): 3.7.x's backend (thinc 8.2.x / blis
+# 0.7.x) was compiled before NumPy 2.0 existed and breaks at runtime against
+# a NumPy 2.x install with "numpy.dtype size changed... binary
+# incompatibility" — not an install-time failure, so it doesn't show up
+# until the model actually tries to load. 3.8's backend was built with
+# proper NumPy 2.x ABI support.
+#
+# Models ARE pinned here as wheel URLs (tagged 3.8.0, to match spacy>=3.8) —
+# NOT downloaded at runtime. Streamlit Cloud's running app process doesn't
+# have write permission to the environment's site-packages (confirmed by a
+# 'Permission denied' error attempting exactly that), so install-time is the
+# only point models can actually be added.
+#
+# spacy[ja] (not plain spacy): Japanese's tokenizer needs SudachiPy for word
+# segmentation — spaCy doesn't bundle it by default, it's an optional extra.
+# Note: spaCy's own docs flag SudachiPy as having a history of version
+# sensitivity ("if you run into errors related to sudachipy... downgrade to
+# sudachipy==0.4.9"); unverified from this sandbox whether that's still
+# relevant — worth watching the deploy log specifically for this one.
+spacy[ja]>=3.8,<3.9
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+fr_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/fr_core_news_sm-3.8.0/fr_core_news_sm-3.8.0-py3-none-any.whl
+es_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.8.0/es_core_news_sm-3.8.0-py3-none-any.whl
+it_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/it_core_news_sm-3.8.0/it_core_news_sm-3.8.0-py3-none-any.whl
+de_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/de_core_news_sm-3.8.0/de_core_news_sm-3.8.0-py3-none-any.whl
+pt_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/pt_core_news_sm-3.8.0/pt_core_news_sm-3.8.0-py3-none-any.whl
+ja_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/ja_core_news_sm-3.8.0/ja_core_news_sm-3.8.0-py3-none-any.whl
+
+# Chinese word segmentation — pure Python, bundled dictionary, no compiled
+# extensions. Used instead of spaCy's official Chinese pipeline (which
+# typically requires pkuseg, a compiled dependency with a real history of
+# install problems — exactly the risk category the pins above exist to
+# avoid).
+jieba>=0.42,<0.43
+
+# ── Thai ────────────────────────────────────────────────────────────────────
+# PyThaiNLP: pure-Python Thai word segmentation ("newmm" engine, dictionary
+# bundled — no download at runtime) + bundled Thai stopword list.
+pythainlp>=5.0,<6
+
+# ── Arabic & Indonesian: Stanza ──────────────────────────────────────────────
+# Installed at build time, but only IMPORTED (and its model downloaded from
+# huggingface.co) the first time Arabic or Indonesian is analysed — English,
+# French, etc. never load it or torch, so their startup/memory is unchanged.
+#
+# Torch is taken from PyTorch's CPU-only index: the default PyPI build pulls
+# ~2.5 GB of CUDA libraries, which is useless on Streamlit Community Cloud
+# (no GPU) and can exceed its build limits. The CPU build is ~200 MB.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+stanza>=1.9,<2
+
+# Arabic right-to-left rendering in the word cloud — only used if Pillow
+# lacks libraqm (then letters are shaped/re-ordered before drawing).
+arabic-reshaper>=3.0
+python-bidi>=0.4
+
+# ── English translation of the word cloud (Helsinki-NLP opus-mt) ─────────────
+# Runs locally on the CPU torch above; imported only when the
+# "Show the word cloud in English" toggle is on. Models (~300 MB per language)
+# download from huggingface.co on first use. sentencepiece is required by
+# MarianTokenizer; sacremoses avoids a tokenizer warning.
+transformers>=4.40
+sentencepiece>=0.2
+sacremoses>=0.1

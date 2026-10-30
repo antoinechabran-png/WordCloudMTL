@@ -1,0 +1,11 @@
+fontconfig
+fonts-noto-cjk
+fonts-inter
+fonts-open-sans
+fonts-roboto
+fonts-lato
+fonts-montserrat
+fonts-noto-core
+fonts-thai-tlwg
+libraqm0
+libfribidi0
