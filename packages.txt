@@ -9,3 +9,4 @@ fonts-noto-core
 fonts-thai-tlwg
 libraqm0
 libfribidi0
+fonts-hosny-amiri

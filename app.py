@@ -352,6 +352,9 @@ _FONT_SPECS = [
     ("Noto Sans CJK Bold (Chinese / Japanese)", "cjk", lambda: _first_existing([
         "fonts/NotoSansCJK-Bold.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     ]) or _find_installed_font("Noto Sans CJK SC:style=Bold", "Noto Sans CJK")),
+    ("Noto Serif CJK (Chinese / Japanese)", "cjk", lambda: _first_existing([
+        "fonts/NotoSerifCJK-Regular.ttc", "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    ]) or _find_installed_font("Noto Serif CJK SC", "Noto Serif CJK")),
     ("Noto Sans Thai",       "thai", lambda: _first_existing([
         "fonts/NotoSansThai-Regular.ttf", "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
     ]) or _find_installed_font("Noto Sans Thai")),
@@ -924,6 +927,37 @@ def render_wordcloud(freqs, color_of, font_path, width, height, max_words, min_f
     return wc
 
 
+def analyse_subset(token_lists, min_freq, min_edge, n_clusters):
+    """Frequencies, TF-IDF and background Louvain clusters for one set of
+    verbatims (the whole corpus, or one product code). Fast — tokens are
+    already computed, so switching product only redoes counting/clustering."""
+    token_lists = list(token_lists)
+    word_freq = Counter(itertools.chain.from_iterable(token_lists))
+    pair_counts = Counter()
+    for tokens in token_lists:
+        ut = sorted(set(t for t in tokens if word_freq[t] >= min_freq))
+        pair_counts.update(itertools.combinations(ut, 2))
+    G = nx.Graph()
+    for (u, v), w in pair_counts.items():
+        if w >= min_edge:
+            G.add_edge(u, v, weight=w)
+    if G.number_of_nodes() > 0:
+        best_p, best_d, n_components = cluster_to_target(G, n_clusters)
+        best_p = renumber_by_size(best_p, word_freq)
+    else:
+        best_p, best_d, n_components = {}, 0, 0
+    return {
+        "word_freq": word_freq,
+        "tfidf_scores": compute_tfidf_scores(token_lists),
+        "best_p": best_p,
+        "cluster_ids": sorted(set(best_p.values())),
+        "cluster_match_diff": best_d,
+        "n_components": n_components,
+        "n_rows": len(token_lists),
+    }
+
+TOTAL_CODES = "Total (all codes)"
+
 # ─── Sidebar (unchanged layout) ───────────────────────────────────────────────
 if "hide_frag_warning" not in st.session_state:
     st.session_state["hide_frag_warning"] = False
@@ -1085,7 +1119,16 @@ all_stops = set(
 st.title("☁️ Semantic Word Cloud")
 
 if uploaded_file and df is not None:
-    col = st.selectbox("Text column", df.columns)
+    tc1, tc2 = st.columns(2)
+    col = tc1.selectbox("Text column", df.columns)
+    tc2.selectbox(
+        "🏷️ Product code column (optional)",
+        ["None"] + [c for c in df.columns if c != col],
+        key="product_col_choice",
+        help="Choose the column holding the product code: a selector then appears above the word "
+             "cloud to restrict it to one code's verbatims, or show the total. Can be changed after "
+             "generating — no need to regenerate.",
+    )
 
     if subcorpus_words:
         preview_mask = build_subcorpus_mask(df[col].tolist(), subcorpus_words, lang_code=lang_info["code"])
@@ -1177,45 +1220,19 @@ if uploaded_file and df is not None:
                 if top_bigrams:
                     df["tokens"] = df["tokens"].apply(lambda toks: merge_bigrams(toks, top_bigrams))
 
-            word_freq = Counter(itertools.chain.from_iterable(df["tokens"]))
-            if not word_freq:
+            if not any(len(t) for t in df["tokens"]):
                 st.warning("No words left after filtering — check the language, text column or exclusions.")
                 st.stop()
 
-            # Background co-occurrence graph → Louvain communities (colours only)
-            pair_counts = Counter()
-            for tokens in df["tokens"]:
-                ut = sorted(set(t for t in tokens if word_freq[t] >= min_freq))
-                pair_counts.update(itertools.combinations(ut, 2))
-            G = nx.Graph()
-            for (u, v), w in pair_counts.items():
-                if w >= min_edge:
-                    G.add_edge(u, v, weight=w)
-
-            if G.number_of_nodes() > 0:
-                best_p, best_d, n_components = cluster_to_target(G, n_clusters)
-                best_p = renumber_by_size(best_p, word_freq)
-            else:
-                best_p, best_d, n_components = {}, 0, 0
-
-            cluster_ids = sorted(set(best_p.values()))
-            tfidf_scores = compute_tfidf_scores(df["tokens"].tolist())
-
-            keep_cols = [col, "tokens"] + ([group_col_choice] if group_col_choice != "None" else [])
+            # Keep every original column (so the product-code column can be
+            # changed afterwards without regenerating); drop helper columns.
             st.session_state["results"] = {
-                "word_freq": word_freq,
-                "tfidf_scores": tfidf_scores,
-                "best_p": best_p,
-                "cluster_ids": cluster_ids,
-                "resp_df": df[keep_cols].copy(),
+                "resp_df": df.drop(columns=["_analysis_text"], errors="ignore").copy(),
                 "text_col": col,
                 "group_col": group_col_choice if group_col_choice != "None" else None,
                 "lang_code": code,
                 "lang_name": lang_choice,
-                "min_freq": min_freq,
-                "target_n_clusters": n_clusters,
-                "cluster_match_diff": best_d,
-                "n_components": n_components,
+                "run_id": st.session_state.get("results", {}).get("run_id", 0) + 1,
                 "n_before_filter": n_before_filter,
                 "n_after_filter": len(df),
                 "subcorpus_words": list(subcorpus_words),
@@ -1224,35 +1241,67 @@ if uploaded_file and df is not None:
                 "spelling_corrections": spelling_corrections,
                 "spelling_corrected_occurrences": spelling_corrected_occurrences,
             }
-            st.session_state["cluster_colors"] = {
-                cid: CLUSTER_COLORS[i % len(CLUSTER_COLORS)] for i, cid in enumerate(cluster_ids)
-            }
+            # Colours are per cluster rank (C1 = biggest cluster), shared by
+            # every product code.
+            st.session_state["cluster_colors"] = {i: c for i, c in enumerate(CLUSTER_COLORS)}
+            st.session_state["analysis_cache"] = {}
+            st.session_state.pop("codes_zip", None)
 
 # ── Render from session_state ────────────────────────────────────────────────
 if "results" in st.session_state:
     res = st.session_state["results"]
-    word_freq    = res["word_freq"]
-    tfidf_scores = res["tfidf_scores"]
-    best_p       = res["best_p"]
-    cluster_ids  = res["cluster_ids"]
-    resp_df      = res["resp_df"]
+    full_df      = res["resp_df"]
     group_col    = res.get("group_col")
     lang_code    = res["lang_code"]
-    res_min_freq = res.get("min_freq", 1)
+    res_min_freq = min_freq          # live sidebar values: re-clustering is instant
     dl = lambda w: display_label(w, lang_code)
+    analysis_cache = st.session_state.setdefault("analysis_cache", {})
 
-    # ── Translate to English (non-English corpora only) ──────────────────────
-    translate_on = False
-    if lang_code != "en":
-        translate_on = st.toggle(
-            "🇬🇧 Show the word cloud in English (Helsinki-NLP translation)",
-            value=True, key="translate_to_en",
-            help="The analysis (lemmas, phrases, clusters) stays in the original language; only "
-                 "the words drawn in the cloud are translated to English, locally inside the app "
-                 "(nothing is sent to an external service). First use downloads the "
-                 f"{res.get('lang_name', '')}→English model (~300 MB, ~1 min). Words that translate "
-                 "to the same English word are merged.",
+    def get_analysis(product_col, code_value, rows):
+        key = (res.get("run_id"), product_col, code_value, min_freq, min_edge, n_clusters)
+        if key not in analysis_cache:
+            analysis_cache[key] = analyse_subset(rows["tokens"].tolist(), min_freq, min_edge, n_clusters)
+        return analysis_cache[key]
+
+    # ── Product code split ───────────────────────────────────────────────────
+    product_col = st.session_state.get("product_col_choice", "None")
+    if product_col not in full_df.columns:
+        product_col = None
+    product_value = TOTAL_CODES
+    code_counts = None
+    if product_col:
+        code_counts = full_df[product_col].astype(str).value_counts().sort_index()
+        product_value = st.selectbox(
+            f"🏷️ Product code ({product_col})",
+            [TOTAL_CODES] + code_counts.index.tolist(),
+            key=f"product_value_{product_col}",
+            format_func=lambda v: (f"{v} — {len(full_df)} verbatims" if v == TOTAL_CODES
+                                   else f"{v} — {code_counts.get(v, 0)} verbatims"),
+            help="Restricts the whole analysis (frequencies, TF-IDF, colour clusters) to the verbatims "
+                 "of this code. 'Total' uses every code.",
         )
+    if product_col and product_value != TOTAL_CODES:
+        resp_df = full_df[full_df[product_col].astype(str) == product_value].reset_index(drop=True)
+    else:
+        resp_df = full_df
+
+    with st.spinner("Clustering words…"):
+        an = get_analysis(product_col, product_value, resp_df)
+    word_freq    = an["word_freq"]
+    tfidf_scores = an["tfidf_scores"]
+    best_p       = an["best_p"]
+    cluster_ids  = an["cluster_ids"]
+    res["cluster_match_diff"] = an["cluster_match_diff"]
+    res["n_components"] = an["n_components"]
+    res["target_n_clusters"] = n_clusters
+    if product_col and product_value != TOTAL_CODES and len(resp_df) < 30:
+        st.caption(f"ℹ️ Only {len(resp_df)} verbatims for this code — lower 'Min word occurrences' / "
+                   "'Min connection strength' in the sidebar if the cloud looks empty or all grey.")
+
+    # English translation switch: the widget itself is drawn just above the
+    # word cloud (further down); its current value is read here because the
+    # font list depends on it. Off by default → words stay in the local language.
+    translate_on = lang_code != "en" and bool(st.session_state.get("translate_to_en", False))
 
     def cluster_members(cid, freq_source):
         return sorted((w for w, c in best_p.items() if c == cid), key=lambda w: -freq_source.get(w, 0))
@@ -1401,6 +1450,17 @@ if "results" in st.session_state:
             t = 0.5 if fmax == fmin else (f - fmin) / (fmax - fmin)
             return shade_rgb_str(base_color, 0.3 + t * 0.55)
 
+    if lang_code != "en":
+        translate_on = st.toggle(
+            "🇬🇧 Translate the word cloud into English",
+            value=False, key="translate_to_en",
+            help="Off = words in the original language. On = the words drawn in the cloud are "
+                 "translated to English with Helsinki-NLP, locally inside the app (nothing is sent "
+                 "to an external service). The analysis (lemmas, phrases, clusters) always stays in "
+                 f"the original language. First use downloads the {res.get('lang_name', '')}→English "
+                 "model (~300 MB, ~1 min). Words that translate to the same English word are merged.",
+        )
+
     label_of = dl
     render_freqs, render_color, render_lang = cloud_freqs, color_of, lang_code
     drawn_src = set(cloud_freqs)
@@ -1523,6 +1583,8 @@ if "results" in st.session_state:
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         fname = f"wordcloud_{re.sub(r'[^A-Za-z0-9]+', '_', cloud_scope).lower()}"
+        if product_col and product_value != TOTAL_CODES:
+            fname = f"wordcloud_{re.sub(r'[^A-Za-z0-9]+', '_', str(product_value))}_" + fname[len("wordcloud_"):]
         if group_value:
             fname += "_" + re.sub(r"[^A-Za-z0-9]+", "_", str(group_value)).lower()
         png_bytes = buf.getvalue()
@@ -1531,6 +1593,7 @@ if "results" in st.session_state:
         for w in sorted(cloud_freqs, key=lambda w: -cloud_freqs[w]):
             cid = best_p.get(w)
             rows.append({
+                **({"product_code": product_value} if product_col else {}),
                 "word": dl(w),
                 **({"english": label_of(w) if w in drawn_src else ""} if render_lang != lang_code else {}),
                 "frequency": scope_freq.get(w, 0),
@@ -1557,3 +1620,78 @@ if "results" in st.session_state:
         with st.expander("📋 Word table"):
             st.dataframe(words_df, use_container_width=True, hide_index=True,
                          height=min(420, 40 + 35 * len(words_df)))
+
+    # ── Every product code at once (ZIP) ─────────────────────────────────────
+    if product_col and code_counts is not None:
+        st.markdown("---")
+        st.markdown("#### 📦 All product codes")
+        st.caption(
+            "Builds one word cloud per code (plus the total) with the current settings — font, sizes, "
+            "TF-IDF, English translation and your translation corrections — using the entire sample "
+            "of each code. Also includes one Excel file with every code's words."
+        )
+
+        def build_code_cloud(rows):
+            a = get_analysis(product_col, code_v, rows)
+            p, wfreq = a["best_p"], a["word_freq"]
+            wts = a["tfidf_scores"] if use_tfidf else {w: float(n) for w, n in wfreq.items()}
+            ws = [w for w, n in wfreq.items() if n >= min_freq and (show_unclustered or w in p)]
+            freqs = {w: wts.get(w, 0.0) for w in ws if wts.get(w, 0.0) > 0}
+            if not freqs:
+                return None, []
+            col_of = lambda w: rgb_str(color_map.get(p[w], UNCLUSTERED_COLOR)) if w in p else rgb_str(UNCLUSTERED_COLOR)
+            top = [w for w, _ in sorted(freqs.items(), key=lambda kv: -kv[1])[:max_words]]
+            r_freqs, r_color, r_lang, eng = freqs, col_of, lang_code, {}
+            if translate_on:
+                tr, err = translate_words(top, lang_code, dl)
+                if not err:
+                    ovr = st.session_state.get("translation_overrides", {}).get(lang_code, {})
+                    eng = {w: ovr.get(w, tr[w]) for w in top}
+                    r_freqs, src = {}, {}
+                    for w in top:
+                        r_freqs[eng[w]] = r_freqs.get(eng[w], 0) + freqs[w]
+                        if eng[w] not in src or freqs[w] > freqs[src[eng[w]]]:
+                            src[eng[w]] = w
+                    r_color = lambda lab, _s=src, _c=col_of: _c(_s.get(lab, lab))
+                    r_lang = "en"
+            lo_, hi_ = font_range[0], max(font_range[1], font_range[0] + 1)
+            wc_ = render_wordcloud(r_freqs, r_color, font_path, *CANVAS_PRESETS[canvas_choice], max_words,
+                                   lo_, hi_, rel_scaling, margin, background, export_scale, r_lang)
+            out_rows = []
+            for w in sorted(freqs, key=lambda w: -freqs[w]):
+                out_rows.append({
+                    "product_code": code_v, "word": dl(w),
+                    **({"english": eng.get(w, "")} if eng else {}),
+                    "frequency": wfreq.get(w, 0),
+                    "tfidf": round(float(a["tfidf_scores"].get(w, 0.0)), 4),
+                    "cluster": f"C{p[w] + 1}" if w in p else "—",
+                })
+            return wc_.to_image(), out_rows
+
+        if st.button("📦 Build word clouds for every code (ZIP)", use_container_width=True, key="build_codes_zip"):
+            import zipfile
+            codes = [TOTAL_CODES] + code_counts.index.tolist()
+            bar = st.progress(0.0, text="Building word clouds…")
+            zbuf, all_rows = io.BytesIO(), []
+            with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for i, code_v in enumerate(codes):
+                    rows_v = full_df if code_v == TOTAL_CODES else \
+                        full_df[full_df[product_col].astype(str) == code_v].reset_index(drop=True)
+                    img_v, rows_out = build_code_cloud(rows_v)
+                    if img_v is not None:
+                        b = io.BytesIO()
+                        img_v.save(b, format="PNG")
+                        safe = "TOTAL" if code_v == TOTAL_CODES else re.sub(r"[^A-Za-z0-9._-]+", "_", code_v)
+                        zf.writestr(f"wordcloud_{safe}.png", b.getvalue())
+                        all_rows.extend(rows_out)
+                    bar.progress((i + 1) / len(codes), text=f"Building word clouds… {code_v}")
+                xb = io.BytesIO()
+                with pd.ExcelWriter(xb, engine="openpyxl") as writer:
+                    pd.DataFrame(all_rows).to_excel(writer, index=False, sheet_name="words_by_code")
+                zf.writestr("words_by_code.xlsx", xb.getvalue())
+            bar.empty()
+            st.session_state["codes_zip"] = zbuf.getvalue()
+        if st.session_state.get("codes_zip"):
+            st.download_button("💾 Download all codes (ZIP)", data=st.session_state["codes_zip"],
+                               file_name=f"wordclouds_by_{re.sub(r'[^A-Za-z0-9]+', '_', product_col)}.zip",
+                               mime="application/zip", use_container_width=True, key="download_codes_zip")
