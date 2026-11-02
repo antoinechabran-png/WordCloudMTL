@@ -1154,25 +1154,7 @@ def analyse_subset(token_lists, min_freq, min_edge, n_clusters):
 TOTAL_CODES = "Total (all codes)"
 
 # ─── Sidebar (unchanged layout) ───────────────────────────────────────────────
-if "hide_frag_warning" not in st.session_state:
-    st.session_state["hide_frag_warning"] = False
-
 with st.sidebar:
-    if not st.session_state["hide_frag_warning"]:
-        warn_col, close_col = st.columns([10, 1])
-        warn_col.markdown(
-            """<div style="background:#fff3cd;color:#664d03;border:1px solid #ffe69c;
-            border-radius:8px;padding:7px 10px;font-size:11.5px;line-height:1.4;">
-            ⚠️ This verbatim analysis suite is designed for <b>non-fragrance-related</b> text,
-            or <b>huge batches of aggregated verbatims</b> (e.g. thousands). For fragrance /
-            fragrance test analysis, please use <b>Text-Mining</b> or <b>Verbatim Studio</b> instead.
-            </div>""",
-            unsafe_allow_html=True,
-        )
-        if close_col.button("✕", key="dismiss_frag_warning", help="Dismiss this notice"):
-            st.session_state["hide_frag_warning"] = True
-            st.rerun()
-
     st.title("⚙️ Settings")
     lang_choice = st.selectbox("🌍 Verbatim language", list(LANGUAGES.keys()), index=0, key="lang_choice")
     lang_info = LANGUAGES[lang_choice]
