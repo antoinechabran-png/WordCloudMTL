@@ -81,9 +81,9 @@ NEGATION_WORDS = {
     "it": ["non", "mai", "nessuno", "nessuna", "nessun", "niente", "né", "senza"],
     "de": ["nicht", "kein", "keine", "keinen", "keinem", "keiner", "keines", "nie", "niemals", "ohne"],
     "pt": ["não", "nunca", "jamais", "nenhum", "nenhuma", "tampouco", "nem", "sem"],
-    "zh": ["不", "没", "没有", "别", "无", "非", "不太", "不怎么", "不够", "没那么", "不是很", "并不"],
+    "zh": ["不", "没", "没有", "别", "无", "非", "不太", "不怎么", "没那么", "不是很", "并不"],
     "th": ["ไม่", "ไม่ได้", "มิ", "ไม่ค่อย", "ไม่มี", "ไร้"],
-    "id": ["tidak", "tak", "bukan", "belum", "jangan", "kurang", "tanpa", "nggak", "gak", "ga", "enggak"],
+    "id": ["tidak", "tak", "bukan", "belum", "jangan", "tanpa", "nggak", "gak", "ga", "enggak"],
     "ar": ["لا", "لم", "لن", "ليس", "غير", "بدون"],
 }
 # French "ne" closers ("ne … pas", "n' … jamais").
@@ -102,7 +102,7 @@ INTENSIFIERS = {
     "fr": {"très", "trop", "si", "assez", "vraiment", "tellement", "super", "hyper", "du", "tout",
            "le", "la", "les", "un", "une", "de", "d'", "des", "particulièrement", "spécialement", "aussi",
            "encore", "forcément", "franchement"},
-    "es": {"muy", "tan", "demasiado", "nada", "tanto", "mucho", "realmente", "el", "la", "un", "una",
+    "es": {"muy", "tan", "nada", "tanto", "mucho", "realmente", "el", "la", "un", "una", "lo",
            "me", "le", "lo", "se", "te", "es", "está", "parece"},
     "it": {"molto", "troppo", "così", "tanto", "proprio", "affatto", "per", "niente", "il", "la", "un",
            "una", "mi", "ci", "si", "è", "sembra", "davvero"},
@@ -132,6 +132,81 @@ LINKING_VERBS = {
 _SKIP_POS = {"DET", "PRON", "AUX", "PART", "ADP", "SCONJ", "CCONJ", "NUM", "SPACE"}
 # Languages where negation is merged on the token list (after segmentation/lemmatization).
 TOKEN_NEGATION_LANGS = {"zh", "th", "id", "ar"}
+
+# ─── "Not enough" / "too" modifiers ──────────────────────────────────────────
+# Besides plain negation ("not_<lemma>"), two intensity modifiers get their own
+# token so the cloud keeps the diagnostic apart:
+#   notenough_<lemma>  "not fresh enough", "pas assez frais", "不够新鲜", "kurang segar"
+#   too_<lemma>        "too strong", "trop fort", "zu stark", "太浓", "terlalu kuat"
+#   toomuch_<lemma>    "too much perfume", "trop de parfum", "zu viel Duft" (nouns)
+ENOUGH_WORDS = {   # turn a negation into "not enough" (before or after the word)
+    "en": {"enough", "sufficiently"},
+    "fr": {"assez", "suffisamment"},
+    "es": {"suficientemente", "suficiente", "bastante"},
+    "it": {"abbastanza", "sufficientemente"},
+    "de": {"genug", "genügend", "ausreichend"},
+    "pt": {"suficientemente", "suficiente", "bastante"},
+}
+TOO_WORDS = {
+    "en": {"too", "overly", "excessively"},
+    "fr": {"trop", "excessivement"},
+    "es": {"demasiado", "excesivamente"},
+    "it": {"troppo", "eccessivamente"},
+    "de": {"zu", "allzu", "übermäßig"},
+    "pt": {"demasiado", "excessivamente", "demasiadamente"},
+}
+TOO_POST_WORDS = {"pt": {"demais"}}                         # "forte demais"
+LITTLE_WORDS = {"little", "peu", "wenig", "poco", "pouco"}   # "too little", "trop peu", "zu wenig"
+MUCH_WORDS = {"much", "many", "of", "de", "d'", "viel", "viele", "vielen"}
+INSUFFICIENT_WORDS = {   # "not enough" without a negation word
+    "en": {"insufficiently"},
+    "fr": {"insuffisamment"},
+    "es": {"poco", "insuficientemente"},
+    "it": {"poco", "insufficientemente"},
+    "pt": {"pouco", "insuficientemente"},
+    "de": set(),
+}
+A_LITTLE = {"un", "una", "um", "uma", "a"}   # "un poco fresco" = a bit fresh (not a modifier)
+
+# Japanese: X足りない → not enough X ; Xすぎる → too X
+JA_ENOUGH_VERBS = {"足りる", "たりる", "足る"}
+JA_TOO = {"過ぎる", "すぎる", "過ぎ", "すぎ"}
+
+# Token-list languages (after segmentation / Stanza lemmatization).
+TOKEN_MODIFIERS = {
+    "zh": {"ne_pre": {"不够", "不太够", "缺乏", "缺少"}, "too_pre": {"太", "过于", "太过"},
+           "too_post": set(), "enough_post": set()},
+    "th": {"ne_pre": set(), "too_pre": set(),
+           "too_post": {"เกินไป", "เกิน"}, "enough_post": {"พอ"}},
+    "id": {"ne_pre": {"kurang"}, "too_pre": {"terlalu", "kelewat"},
+           "too_post": set(), "enough_post": {"cukup"}},
+    "ar": {"ne_pre": set(), "too_pre": {"مفرط"},
+           "too_post": {"مفرط", "لازم", "اللازم", "لزوم", "اللزوم"},
+           "enough_post": {"كفاية", "الكفاية", "كاف", "كافي", "كافية"}},
+}
+# Words between an Arabic adjective and "اللازم" ("أكثر من اللازم" = more than necessary).
+TOKEN_POST_FILLERS = {"أكثر", "اكثر", "زيادة", "زائد", "من", "عن", "ب", "ما", "في", "فيه", "ه",
+                      "มาก", "ไป", "จน"}
+
+# How each token kind is displayed, per language ({} = the word).
+MOD_DISPLAY = {
+    "notenough": {"en": "not {} enough", "fr": "pas assez {}", "es": "poco {}", "it": "non abbastanza {}",
+                  "de": "nicht {} genug", "pt": "pouco {}", "zh": "不够{}", "ja": "{}が足りない",
+                  "th": "{}ไม่พอ", "id": "kurang {}", "ar": "{} غير كاف"},
+    "too":       {"en": "too {}", "fr": "trop {}", "es": "demasiado {}", "it": "troppo {}",
+                  "de": "zu {}", "pt": "demasiado {}", "zh": "太{}", "ja": "{}すぎる",
+                  "th": "{}เกินไป", "id": "terlalu {}", "ar": "{} أكثر من اللازم"},
+    "toolittle": {"en": "not enough {}", "fr": "pas assez de {}", "es": "poco {}", "it": "poco {}",
+                  "de": "zu wenig {}", "pt": "pouco {}", "zh": "不够{}", "ja": "{}が足りない",
+                  "th": "{}ไม่พอ", "id": "kurang {}", "ar": "{} غير كاف"},
+    "toomuch":   {"en": "too much {}", "fr": "trop de {}", "es": "demasiado {}", "it": "troppo {}",
+                  "de": "zu viel {}", "pt": "demasiado {}", "zh": "太多{}", "ja": "{}が多すぎる",
+                  "th": "{}มากเกินไป", "id": "terlalu banyak {}", "ar": "{} أكثر من اللازم"},
+}
+MOD_KINDS = ("notenough", "toolittle", "toomuch", "too", "not")
+# English wording used when the cloud is translated: (prefix, suffix)
+MOD_ENGLISH = {"not": ("not ", ""), "notenough": ("not ", " enough"), "toolittle": ("not enough ", ""), "too": ("too ", ""),
+               "toomuch": ("too much ", "")}
 
 # Default exclusion words, translated per language (best-effort — editable
 # by the user via the "Extra exclusion words" sidebar field either way).
@@ -668,23 +743,78 @@ def is_word(tok):
     return any(c.startswith("L") for c in cats) and all(c[0] in "LM" for c in cats)
 
 def merge_negations(tokens, lang_code, stop_words):
-    """Token-list negation (Chinese, Thai, Indonesian, Arabic): a negation word
-    is merged with the next content token, skipping intensifiers/stopwords in
-    between ("tidak terlalu segar" → tidak_segar, "不是很新鲜" → not_新鲜)."""
+    """Token-list modifiers (Chinese, Thai, Indonesian, Arabic).
+    • negation + next content token, skipping intensifiers/stopwords
+      ("tidak terlalu segar" → tidak_segar, "不是很新鲜" → not_新鲜)
+    • 'not enough': prefix words (不够, kurang), an 'enough' word skipped after a
+      negation ("tidak cukup segar"), or after the word ("ไม่สดพอ", "สดไม่พอ",
+      "ليس قويا بما فيه الكفاية", "قوي غير كاف")
+    • 'too': prefix (太, terlalu, مفرط) or suffix (แรงเกินไป, قوي أكثر من اللازم)."""
     neg_words = set(NEGATION_WORDS.get(lang_code, []))
-    if not neg_words:
-        return tokens
+    cfg = TOKEN_MODIFIERS.get(lang_code, {})
+    ne_pre, too_pre = cfg.get("ne_pre", set()), cfg.get("too_pre", set())
+    too_post, enough_post = cfg.get("too_post", set()), cfg.get("enough_post", set())
     skip = INTENSIFIERS.get(lang_code, set())
+    markers = neg_words | ne_pre | too_pre | too_post | enough_post
+    neg_prefixes = tuple(f"{w}_" for w in neg_words) + ("not_",)
+
+    def skippable(tok):
+        # intensifiers like 太 / terlalu / cukup are skipped after a negation
+        # ("不太浓" → not strong, "tidak cukup segar" → not fresh enough)
+        return (tok in skip or tok in stop_words or tok in too_pre or tok in enough_post) \
+            and tok not in neg_words and tok not in ne_pre
+
+    def next_target(i):
+        """Index of the next content token after i (≤3 ahead), and skipped tokens."""
+        j, skipped = i + 1, []
+        while j < len(tokens) and j <= i + 3 and skippable(tokens[j]):
+            skipped.append(tokens[j])
+            j += 1
+        if j < len(tokens) and j <= i + 3 and tokens[j] not in markers and tokens[j] not in stop_words:
+            return j, skipped
+        return None, skipped
+
+    def retag_previous(merged, kind):
+        """Apply a post-position modifier to the last content token already emitted."""
+        p = len(merged) - 1
+        while p >= 0 and len(merged) - p <= 7:
+            w = merged[p]
+            if w in neg_words or w in TOKEN_POST_FILLERS or w in skip or w in stop_words:
+                p -= 1                           # "สดไม่พอ": bare negation absorbed below
+                continue
+            if w.startswith(("notenough_", "too_", "toomuch_")):
+                return True
+            base = w
+            for pre in neg_prefixes:
+                if w.startswith(pre):
+                    base = w[len(pre):]
+                    break
+            merged[p] = f"{kind}_{base}"
+            del merged[p + 1:]                   # drop fillers between word and marker
+            return True
+        return False
+
     merged, i, n = [], 0, len(tokens)
     while i < n:
         t = tokens[i]
-        if t in neg_words:
-            j = i + 1
-            while j < n and j <= i + 3 and (tokens[j] in skip or tokens[j] in stop_words) and tokens[j] not in neg_words:
-                j += 1
-            if j < n and j <= i + 3 and tokens[j] not in neg_words and tokens[j] not in stop_words:
-                prefix = "not" if lang_code == "zh" else t
-                merged.append(f"{prefix}_{tokens[j]}")
+        if t in enough_post and t not in neg_words and retag_previous(merged, "notenough"):
+            i += 1
+            continue
+        if t in too_post and retag_previous(merged, "too"):
+            if lang_code == "th" and i + 1 < n and tokens[i + 1] == "ไป":
+                i += 1
+            i += 1
+            continue
+        if t in neg_words or t in ne_pre or t in too_pre:
+            j, skipped = next_target(i)
+            if j is not None:
+                if t in too_pre and t not in neg_words:
+                    merged.append(f"too_{tokens[j]}")
+                elif t in ne_pre or any(s in enough_post for s in skipped):
+                    merged.append(f"notenough_{tokens[j]}")
+                else:
+                    prefix = "not" if lang_code == "zh" else t
+                    merged.append(f"{prefix}_{tokens[j]}")
                 i = j + 1
                 continue
         merged.append(t)
@@ -695,117 +825,230 @@ def _norm_apostrophes(text):
     return text.replace("’", "'").replace("‘", "'").replace("`", "'")
 
 def spacy_negation_lemmas(doc, lang_code, neg_surfaces=None):
-    """Lemmas from a spaCy doc, with negations merged into 'not_<lemma>'
-    tokens using part-of-speech tags. neg_surfaces (optional dict) collects
-    the original wording of each negated token for display (Japanese)."""
+    """Lemmas from a spaCy doc with negation / 'not enough' / 'too' merged into
+    one token ('not_<lemma>', 'notenough_<lemma>', 'too_<lemma>',
+    'toomuch_<lemma>') using part-of-speech tags. neg_surfaces (optional dict)
+    collects the original wording of each such token (used for Japanese display)."""
     toks = list(doc)
     n = len(toks)
     neg_words = set(NEGATION_WORDS.get(lang_code, []))
     skip_words = INTENSIFIERS.get(lang_code, set())
-    consumed, negated = set(), {}
+    enough = ENOUGH_WORDS.get(lang_code, set())
+    too_words = TOO_WORDS.get(lang_code, set())
+    too_post = TOO_POST_WORDS.get(lang_code, set())
+    insufficient = INSUFFICIENT_WORDS.get(lang_code, set())
+    modifier_words = enough | too_words | too_post | insufficient | LITTLE_WORDS
+    consumed, mods = set(), {}            # mods: index → [kind, surface]
 
     def lower(t):
         return _norm_apostrophes(t.lower_)
 
     def is_content(t):
+        lw = lower(t)
         return (t.pos_ in _CONTENT_POS and (t.is_alpha or lang_code == "ja")
-                and lower(t) not in skip_words and lower(t) not in neg_words and t.lemma_ not in JA_NEG)
+                and lw not in skip_words and lw not in neg_words and lw not in modifier_words
+                and t.lemma_ not in JA_NEG)
 
-    def find_forward(i):
-        for j in range(i + 1, min(n, i + 6)):
+    def find_forward(i, max_ahead=5):
+        """(index of next content token, set of skipped lowercase words)."""
+        skipped = set()
+        for j in range(i + 1, min(n, i + 1 + max_ahead)):
             t = toks[j]
-            if t.is_punct:
-                return None
-            if j in consumed or lower(t) in neg_words:
-                return None
-            if lower(t) in skip_words or t.pos_ in _SKIP_POS:
+            lw = lower(t)
+            if t.is_punct or j in consumed or lw in neg_words:
+                return None, skipped
+            if lw in skip_words or lw in modifier_words or t.pos_ in _SKIP_POS:
+                skipped.add(lw)
                 continue
             if is_content(t):
-                return j
-            return None
-        return None
+                return j, skipped
+            return None, skipped
+        return None, skipped
 
     def find_backward(i, max_back=4):
         for j in range(i - 1, max(-1, i - 1 - max_back), -1):
             t = toks[j]
-            if t.is_punct:
-                return None
-            if j in negated or j in consumed:
+            if t.is_punct or j in mods or j in consumed:
                 return None
             if t.pos_ in ("VERB", "ADJ") and is_content(t):
                 return j
         return None
 
+    def enough_after(target):
+        """'not fresh enough', 'nicht frisch genug', 'o suficiente': consume it."""
+        for j in range(target + 1, min(n, target + 3)):
+            lw = lower(toks[j])
+            if lw in enough:
+                consumed.add(j)
+                return True
+            if lw not in ("o", "lo", "le") and toks[j].pos_ != "DET":
+                return False
+        return False
+
     def prefer_adjective(target):
-        """Linking verb followed by an adjective → negate the adjective."""
+        """Linking verb followed by an adjective → modify the adjective."""
         if target is None or toks[target].pos_ not in ("VERB", "AUX"):
             return target
         if toks[target].lemma_.lower() not in LINKING_VERBS:
             return target
-        nxt = find_forward(target)
+        nxt, _ = find_forward(target)
         return nxt if nxt is not None and toks[nxt].pos_ in ("ADJ", "ADV") else target
 
+    def set_negation(target, skipped, start=None):
+        after = enough_after(target)
+        kind = "notenough" if (skipped & enough) or after else "not"
+        if kind == "notenough" and toks[target].pos_ in ("NOUN", "PROPN"):
+            kind = "toolittle"
+        if start is not None and start < target:
+            # absorb the words between the negation and its target
+            # ("not too strong", "pas assez frais") so they don't modify it again
+            for j in range(start + 1, target):
+                if lower(toks[j]) in modifier_words or lower(toks[j]) in skip_words:
+                    consumed.add(j)
+        mods[target] = [kind, None]
+
     for i, t in enumerate(toks):
-        if i in consumed:
+        if i in consumed or i in mods:
             continue
         low = lower(t)
+
+        # ── Japanese: endings attach backwards ───────────────────────────────
         if lang_code == "ja":
-            if t.lemma_ in JA_NEG or t.text in JA_NEG:
+            is_neg = t.lemma_ in JA_NEG or t.text in JA_NEG
+            is_too = t.lemma_ in JA_TOO or t.text in JA_TOO
+            if is_neg or is_too:
                 consumed.add(i)
                 j = i - 1
                 while j >= 0 and i - j <= 6 and not toks[j].is_punct and (
                         toks[j].lemma_ in JA_SKIP or toks[j].text in JA_SKIP or toks[j].lemma_ in JA_NEG
                         or toks[j].pos_ in ("ADP", "AUX", "PART", "SCONJ")):
                     j -= 1
-                if j >= 0 and j not in negated and not toks[j].is_punct and toks[j].pos_ in _CONTENT_POS:
-                    negated[j] = doc.text[toks[j].idx: t.idx + len(t.text)]
-                    consumed.update(range(j + 1, i))   # じゃ / で / は / あり / ませ …
+                if j < 0 or j in mods or toks[j].is_punct or toks[j].pos_ not in _CONTENT_POS:
+                    continue
+                kind = "too" if is_too else "not"
+                if is_neg and toks[j].lemma_ in JA_ENOUGH_VERBS:      # 新鮮さが足りない
+                    k = j - 1
+                    while k >= 0 and j - k <= 3 and (toks[k].lemma_ in JA_SKIP or toks[k].pos_ in ("ADP", "PART")):
+                        k -= 1
+                    if k >= 0 and toks[k].pos_ in _CONTENT_POS and k not in mods:
+                        consumed.update(range(k + 1, i))
+                        mods[k] = ["notenough", doc.text[toks[k].idx: t.idx + len(t.text)]]
+                    continue
+                consumed.update(range(j + 1, i))
+                mods[j] = [kind, doc.text[toks[j].idx: t.idx + len(t.text)]]
             continue
+
+        # ── French "ne … pas [assez] X" ───────────────────────────────────────
         if lang_code == "fr" and low in FR_NE:
             k = next((k for k in range(i + 1, min(n, i + 6)) if lower(toks[k]) in FR_CLOSERS), None)
             consumed.add(i)
             if k is not None:
                 consumed.add(k)
                 verbs = [j for j in range(i + 1, k) if toks[j].pos_ == "VERB" and is_content(toks[j])]
-                target = verbs[-1] if verbs else find_forward(k)
-                if verbs and toks[target].lemma_.lower() in LINKING_VERBS:
-                    adj = find_forward(k)
-                    if adj is not None and toks[adj].pos_ in ("ADJ", "ADV"):
-                        target = adj
+                fwd, skipped = find_forward(k)
+                target = verbs[-1] if verbs else fwd
+                if verbs and toks[target].lemma_.lower() in LINKING_VERBS and fwd is not None \
+                        and toks[fwd].pos_ in ("ADJ", "ADV"):
+                    target = fwd
                 if target is not None:
-                    negated[target] = None
+                    set_negation(target, skipped if target == fwd else set(), start=k if target == fwd else None)
             continue
+
+        # ── too / too much / too little ───────────────────────────────────────
+        if low in too_words:
+            if lang_code == "de" and low == "zu":
+                nxt = toks[i + 1] if i + 1 < n else None
+                if nxt is None or not (nxt.pos_ in ("ADJ", "ADV") or lower(nxt) in LITTLE_WORDS | MUCH_WORDS):
+                    continue                       # "zu Hause", "zu riechen" — not "too"
+            j, kind_hint = i + 1, None
+            while j < n and j <= i + 2 and lower(toks[j]) in LITTLE_WORDS | MUCH_WORDS:
+                kind_hint = "little" if lower(toks[j]) in LITTLE_WORDS else "much"
+                j += 1
+            target, _ = find_forward(j - 1, max_ahead=2)
+            if target is not None:
+                consumed.update(range(i, target))
+                if kind_hint == "little":
+                    mods[target] = ["toolittle" if toks[target].pos_ in ("NOUN", "PROPN") else "notenough", None]
+                elif toks[target].pos_ in ("NOUN", "PROPN"):
+                    mods[target] = ["toomuch", None]
+                elif toks[target].pos_ in ("ADJ", "ADV") or kind_hint == "much":
+                    mods[target] = ["too", None]
+            continue
+
+        # ── insufficiently / poco / pouco ─────────────────────────────────────
+        if low in insufficient:
+            if i > 0 and lower(toks[i - 1]) in A_LITTLE:      # "un poco fresco" = a bit fresh
+                continue
+            target, _ = find_forward(i, max_ahead=2)
+            if target is not None and toks[target].pos_ in ("ADJ", "ADV", "NOUN"):
+                consumed.add(i)
+                mods[target] = ["toolittle" if toks[target].pos_ == "NOUN" else "notenough", None]
+            continue
+
+        # ── post-position "too" (pt "forte demais") ────────────────────────────
+        if low in too_post:
+            j = find_backward(i, max_back=2)
+            if j is not None:
+                consumed.add(i)
+                mods[j] = ["too", None]
+            continue
+
+        # ── plain negation (→ "not enough" if an enough-word is involved) ─────
         if low in neg_words:
             consumed.add(i)
-            target = prefer_adjective(find_forward(i))
+            target, skipped = find_forward(i)
+            target = prefer_adjective(target)
+            if target is not None and target != find_forward(i)[0]:
+                skipped = skipped | find_forward(target)[1]
+            start = i
             if target is None:
-                target = find_backward(i)
+                target, skipped, start = find_backward(i), set(), None
             if target is not None:
-                negated[target] = None
+                set_negation(target, skipped, start=start)
 
     lemmas = []
     for i, t in enumerate(toks):
         if i in consumed:
             continue
         lemma = t.lemma_.lower() if t.lemma_ else t.lower_
-        if i in negated:
-            tok = f"not_{lemma}"
+        if i in mods:
+            kind, surface = mods[i]
+            tok = f"{kind}_{lemma}"
             lemmas.append(tok)
-            if neg_surfaces is not None and negated[i]:
-                neg_surfaces.setdefault(tok, Counter())[negated[i]] += 1
+            if neg_surfaces is not None and surface:
+                neg_surfaces.setdefault(tok, Counter())[surface] += 1
         elif t.is_alpha:
             lemmas.append(lemma)
     return lemmas
 
 def _regex_negation(text, lang_code):
-    """Fallback when no spaCy model is loaded: 'neg [intensifiers] word' → not_word."""
+    """Fallback when no spaCy model is loaded (pattern rules on raw text):
+    'too/trop X' → too_X, 'neg [assez/enough] X [enough]' → notenough_X,
+    'neg [intensifiers] X' → not_X."""
+    W = r"([^\W\d_]+)"
+    too = TOO_WORDS.get(lang_code, set()) - {"zu"}
+    enough = ENOUGH_WORDS.get(lang_code, set())
     neg_words = [w for w in NEGATION_WORDS.get(lang_code, []) if w != "n't"]
-    if not neg_words:
-        return text
-    skip = sorted(INTENSIFIERS.get(lang_code, set()) - {""}, key=len, reverse=True)
-    skip_re = (r"(?:(?:" + "|".join(re.escape(w) for w in skip) + r")\s+){0,3}") if skip else ""
-    pat = r"\b(?:" + "|".join(re.escape(w) for w in neg_words) + r")\s+" + skip_re + r"([^\W\d_]+)"
-    return re.sub(pat, r"not_\1", text, flags=re.UNICODE)
+    alt = lambda ws: "|".join(re.escape(w) for w in sorted(ws, key=len, reverse=True))
+    skip = INTENSIFIERS.get(lang_code, set()) - {""} - enough
+    skip_re = (r"(?:(?:" + alt(skip) + r")\s+){0,3}") if skip else ""
+    neg_skip = (r"(?:(?:" + alt(skip | too) + r")\s+){0,3}") if (skip or too) else ""
+    if neg_words and enough:      # "not enough fresh", "pas assez frais", "not fresh enough"
+        text = re.sub(r"\b(?:" + alt(neg_words) + r")\s+" + skip_re + r"(?:" + alt(enough) + r")\s+" + skip_re + W,
+                      r"notenough_\1", text)
+        text = re.sub(r"\b(?:" + alt(neg_words) + r")\s+" + skip_re + W + r"\s+(?:" + alt(enough) + r")\b",
+                      r"notenough_\1", text)
+    if neg_words:                 # "not (too/very) sweet" → not_sweet
+        text = re.sub(r"\b(?:" + alt(neg_words) + r")\s+" + neg_skip + W, r"not_\1", text)
+    if lang_code == "de":
+        text = re.sub(r"\bzu\s+wenig\s+" + W, r"toolittle_\1", text)
+        text = re.sub(r"\bzu\s+viel(?:e|en)?\s+" + W, r"toomuch_\1", text)
+    if too:
+        text = re.sub(r"\b(?:" + alt(too) + r")\s+(?:peu|little)\s+(?:de\s+|d'|of\s+)" + W, r"toolittle_\1", text)
+        text = re.sub(r"\b(?:" + alt(too) + r")\s+(?:peu|little)\s+" + W, r"notenough_\1", text)
+        text = re.sub(r"\b(?:" + alt(too) + r")\s+(?:much|de|d')\s*" + W, r"toomuch_\1", text)
+        text = re.sub(r"\b(?:" + alt(too) + r")\s+" + W, r"too_\1", text)
+    return text
 
 def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_words,
                jieba_mod=None, thai_tok=None, pre_lemmas=None, neg_surfaces=None):
@@ -834,9 +1077,9 @@ def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_wor
             lemmas = spacy_negation_lemmas(spacy_nlp(text), lang_code, neg_surfaces)
         else:
             text = _regex_negation(text, lang_code)
-            tokens = re.findall(r"not_[^\W\d_]+|[^\W\d_][^\W\d_]+", text, flags=re.UNICODE)
+            tokens = re.findall(r"(?:notenough|toolittle|toomuch|too|not)_[^\W\d_]+|[^\W\d_][^\W\d_]+", text, flags=re.UNICODE)
             if lang_code == "en":
-                lemmas = [t if t.startswith("not_") else lemmatizer_en.lemmatize(t) for t in tokens]
+                lemmas = [t if "_" in t else lemmatizer_en.lemmatize(t) for t in tokens]
             else:
                 lemmas = tokens
 
@@ -902,25 +1145,29 @@ def apply_spelling_corrections(text, correction_map):
 def display_label(word, lang_code=None, neg_display=None):
     """Internal token → label shown in the cloud.
     • phrases 'easy_apply' → 'easy apply' (Thai joined without spaces)
-    • negations 'not_frais' → 'pas frais', 'not_frisch' → 'nicht frisch',
-      'not_新鲜' → '不新鲜', Japanese → most frequent original wording ('強くない')."""
+    • 'not_frais' → 'pas frais', 'notenough_frais' → 'pas assez frais',
+      'too_fort' → 'trop fort', 'not_新鲜' → '不新鲜'; Japanese → most frequent
+      original wording ('強くない', '強すぎる')."""
     if neg_display and word in neg_display:
         return neg_display[word]
     parts = word.split("_")
     out, i = [], 0
     while i < len(parts):
         p = parts[i]
-        if p == "not" and i + 1 < len(parts):
+        if p in MOD_KINDS and i + 1 < len(parts):
             nxt = parts[i + 1]
-            key = "not_" + nxt
+            key = f"{p}_{nxt}"
             if neg_display and key in neg_display:
                 out.append(neg_display[key])
-            elif lang_code == "ja":
-                out.append(nxt + "ない")
-            elif lang_code == "zh":
-                out.append("不" + nxt)
+            elif p == "not":
+                if lang_code == "ja":
+                    out.append(nxt + "ない")
+                elif lang_code == "zh":
+                    out.append("不" + nxt)
+                else:
+                    out.append(f"{NEG_DISPLAY_PREFIX.get(lang_code, 'not')} {nxt}")
             else:
-                out.append(f"{NEG_DISPLAY_PREFIX.get(lang_code, 'not')} {nxt}")
+                out.append(MOD_DISPLAY[p].get(lang_code, MOD_DISPLAY[p]["en"]).format(nxt))
             i += 2
         else:
             out.append(p)
@@ -1065,23 +1312,25 @@ def translate_words(words, lang_code, label_fn):
             return {}, err
         tok, model, _ = loaded
         import torch
-        # Negation tokens built as "not_<word>" (Chinese, spaCy languages):
-        # translate the word itself and prefix "not".
+        # Modifier tokens ("not_x", "notenough_x", "too_x", "toomuch_x"):
+        # translate the word itself and wrap it ("not … enough", "too …").
         sources = []
         for w in todo:
-            if w.startswith("not_"):
-                sources.append(("not ", label_fn(w[4:])))
+            kind = next((k for k in MOD_KINDS if w.startswith(k + "_") and "_" not in w[len(k) + 1:]), None)
+            if kind:
+                pre, suf = MOD_ENGLISH[kind]
+                sources.append((pre, suf, label_fn(w[len(kind) + 1:])))
             else:
-                sources.append(("", label_fn(w)))
+                sources.append(("", "", label_fn(w)))
         for start in range(0, len(todo), 32):
             batch = sources[start:start + 32]
-            inputs = tok([s for _, s in batch], return_tensors="pt", padding=True,
+            inputs = tok([s for _, _, s in batch], return_tensors="pt", padding=True,
                          truncation=True, max_length=32)
             with torch.no_grad():
                 out = model.generate(**inputs, num_beams=4, max_new_tokens=16)
             decoded = tok.batch_decode(out, skip_special_tokens=True)
-            for w, (prefix, src), txt in zip(todo[start:start + 32], batch, decoded):
-                cache[w] = prefix + clean_translation(src, txt)
+            for w, (prefix, suffix, src), txt in zip(todo[start:start + 32], batch, decoded):
+                cache[w] = prefix + clean_translation(src, txt) + suffix
     return {w: cache[w] for w in words}, None
 
 # ─── Word cloud ────────────────────────────────────────────────────────────────
