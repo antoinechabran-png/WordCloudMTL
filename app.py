@@ -57,23 +57,80 @@ LANGUAGES = {
     "Arabic":     {"code": "ar", "nltk_stop": "arabic",     "spacy_model": None,              "engine": "stanza"},
 }
 
-# Best-effort negation markers per language ("tag the next word" heuristic).
-# For space-delimited spaCy languages it's applied with a regex on the raw
-# text; for zh / th / id / ar it's applied on the token list after
-# segmentation/lemmatization (see merge_negations).
+# ─── Negation ────────────────────────────────────────────────────────────────
+# A negation is merged with the word it negates into ONE token, so
+# "not fresh" is counted, clustered and drawn as a unit. Internally the token
+# is "not_<lemma>" (spaCy languages, Chinese, Japanese) or "<negword>_<lemma>"
+# (Thai / Indonesian / Arabic); display_label() shows it in the local
+# language ("pas frais", "nicht frisch", "強くない", "tidak segar").
+#
+# spaCy languages: resolved on spaCy's tokens + part-of-speech tags (see
+# spacy_negation_lemmas): intensifiers/determiners/auxiliaries between the
+# negation and its word are skipped ("not very fresh" → not fresh,
+# "ce n'est pas du tout frais" → pas frais), French "ne + verb + pas" negates
+# the verb ("je n'aime pas" → pas aimer), and a negation with nothing after it
+# negates the preceding verb/adjective ("riecht man nicht" / "j'aime pas").
+# Japanese: ない / ません / ず attach BACKWARDS to the word they follow
+# (強くない, 感じない, 好きじゃない, 匂いがない, 好きではありません).
 NEGATION_WORDS = {
-    "en": ["not", "no", "don't", "can't", "won't", "never"],
-    "fr": ["pas", "jamais", "aucun", "aucune", "non"],
-    "es": ["no", "nunca", "jamás", "ningún", "ninguna", "tampoco"],
-    "it": ["non", "mai", "nessuno", "nessuna", "niente"],
-    "de": ["nicht", "kein", "keine", "nie", "niemals", "nichts"],
-    "pt": ["não", "nunca", "jamais", "nenhum", "nenhuma", "tampouco"],
-    "zh": ["不", "没", "没有", "别", "无", "非"],
-    "th": ["ไม่", "ไม่ได้", "มิ", "ไม่ค่อย"],
-    "id": ["tidak", "tak", "bukan", "belum", "jangan", "kurang"],
-    "ar": ["لا", "لم", "لن", "ليس", "غير"],
+    # spaCy splits "don't" → do + n't, "can't" → ca + n't, "cannot" → can + not
+    "en": ["not", "n't", "no", "never", "nor", "neither", "hardly", "don't", "doesn't", "didn't",
+           "isn't", "aren't", "wasn't", "weren't", "can't", "won't", "wouldn't", "shouldn't", "couldn't"],
+    "fr": ["pas", "jamais", "aucun", "aucune", "non", "sans"],
+    "es": ["no", "nunca", "jamás", "ningún", "ninguna", "ninguno", "tampoco", "ni", "sin"],
+    "it": ["non", "mai", "nessuno", "nessuna", "nessun", "niente", "né", "senza"],
+    "de": ["nicht", "kein", "keine", "keinen", "keinem", "keiner", "keines", "nie", "niemals", "ohne"],
+    "pt": ["não", "nunca", "jamais", "nenhum", "nenhuma", "tampouco", "nem", "sem"],
+    "zh": ["不", "没", "没有", "别", "无", "非", "不太", "不怎么", "不够", "没那么", "不是很", "并不"],
+    "th": ["ไม่", "ไม่ได้", "มิ", "ไม่ค่อย", "ไม่มี", "ไร้"],
+    "id": ["tidak", "tak", "bukan", "belum", "jangan", "kurang", "tanpa", "nggak", "gak", "ga", "enggak"],
+    "ar": ["لا", "لم", "لن", "ليس", "غير", "بدون"],
 }
-# Languages where negation is merged on the token list (not via raw-text regex).
+# French "ne" closers ("ne … pas", "n' … jamais").
+FR_NE = {"ne", "n'"}
+FR_CLOSERS = {"pas", "plus", "jamais", "rien", "guère", "point", "aucun", "aucune", "personne"}
+# Japanese negative endings (lemmas as given by spaCy/SudachiPy): ない,
+# ん/ぬ (polite ません = ます + ん), ず.
+JA_NEG = {"ない", "ぬ", "ん", "ず", "無い"}
+JA_SKIP = {"じゃ", "じゃあ", "で", "では", "は", "が", "も", "く", "て", "ある", "いる", "ます",
+           "だ", "です", "の", "そう", "ませ", "でき", "できる", "られる", "れる", "せる", "させる"}
+
+# Words skipped between a negation and the word it negates.
+INTENSIFIERS = {
+    "en": {"very", "too", "so", "really", "that", "quite", "at", "all", "particularly", "overly",
+           "as", "much", "any", "a", "an", "the", "my", "this", "it", "too", "even", "exactly", "super"},
+    "fr": {"très", "trop", "si", "assez", "vraiment", "tellement", "super", "hyper", "du", "tout",
+           "le", "la", "les", "un", "une", "de", "d'", "des", "particulièrement", "spécialement", "aussi",
+           "encore", "forcément", "franchement"},
+    "es": {"muy", "tan", "demasiado", "nada", "tanto", "mucho", "realmente", "el", "la", "un", "una",
+           "me", "le", "lo", "se", "te", "es", "está", "parece"},
+    "it": {"molto", "troppo", "così", "tanto", "proprio", "affatto", "per", "niente", "il", "la", "un",
+           "una", "mi", "ci", "si", "è", "sembra", "davvero"},
+    "de": {"sehr", "zu", "so", "wirklich", "besonders", "ganz", "gar", "allzu", "richtig", "der", "die",
+           "das", "ein", "eine", "einen", "mehr", "mal", "wirkt", "ist"},
+    "pt": {"muito", "tão", "demais", "bem", "nada", "tanto", "realmente", "o", "a", "um", "uma", "me",
+           "se", "é", "está", "parece"},
+    "zh": {"是", "很", "太", "那么", "这么", "怎么", "够", "特别", "非常", "算", "会", "觉得", "有", "大"},
+    "th": {"ค่อย", "ค่อนข้าง", "เท่าไหร่", "เลย", "ได้", "มี", "ถึงกับ", "ค่อยจะ", "ใช่"},
+    "id": {"terlalu", "begitu", "sangat", "cukup", "amat", "terlampau", "ada", "sama", "sekali", "begitu",
+           "terlalu", "jadi", "punya", "lagi", "terasa"},
+    "ar": {"جدا", "كثيرا", "تماما", "وجد", "يوجد", "كان", "يكن", "ب", "ال", "فيه", "له", "هناك", "عند"},
+}
+# Local-language word shown before a negated lemma (Japanese/Chinese handled separately).
+NEG_DISPLAY_PREFIX = {"en": "not", "fr": "pas", "es": "no", "it": "non", "de": "nicht", "pt": "não"}
+_CONTENT_POS = {"ADJ", "NOUN", "VERB", "PROPN", "ADV"}
+# Linking / sensory verbs: "doesn't smell fresh", "ne sent pas bon", "riecht nicht
+# gut" → the negation goes to the adjective, not to the verb.
+LINKING_VERBS = {
+    "be", "smell", "feel", "seem", "look", "sound", "become", "appear", "remain", "stay", "get",
+    "être", "sentir", "sembler", "paraître", "rester", "devenir", "avoir",
+    "ser", "estar", "oler", "parecer", "quedar", "sentirse",
+    "essere", "sembrare", "sentire", "profumare", "odorare", "restare", "diventare",
+    "sein", "riechen", "wirken", "scheinen", "duften", "bleiben", "werden",
+    "cheirar", "ficar", "sentir-se",
+}
+_SKIP_POS = {"DET", "PRON", "AUX", "PART", "ADP", "SCONJ", "CCONJ", "NUM", "SPACE"}
+# Languages where negation is merged on the token list (after segmentation/lemmatization).
 TOKEN_NEGATION_LANGS = {"zh", "th", "id", "ar"}
 
 # Default exclusion words, translated per language (best-effort — editable
@@ -227,7 +284,7 @@ SUGGESTED_EXTRA_EXCLUSIONS = {
     '相对而言', '简而言之', '综上所述', '这么点儿', '这就是说', '除此之外', '就……而言',
     ],
     "Japanese": [
-    'ある', 'する', 'なる', 'ない', 'できる', '感じる', '思う', '見える', '使う', '入る', '行く', '与える', '起こす', '呼ぶ',
+    'ある', 'する', 'なる', 'できる', '感じる', '思う', '見える', '使う', '入る', '行く', '与える', '起こす', '呼ぶ',
     '特に', 'まるで', 'いつも', '瞬間', '時間', '自分', 'たち', 'イメージ', '雰囲気', '場所', '良い', 'いい', '好き', '美しい',
     ],
 }
@@ -591,7 +648,6 @@ def load_stopwords(nltk_lang):
 
 # ─── Tokenization ────────────────────────────────────────────────────────────
 WORD_PATTERN = re.compile(r"\b[^\W\d_][^\W\d_]+\b", re.UNICODE)
-NEG_TOKEN_RE = re.compile(r"not_[^\W\d_]+", re.UNICODE)
 ARABIC_DIACRITICS = re.compile(r"[ؐ-ًؚ-ٰٟۖ-ۭـ]")
 
 # Minimum surviving length (len > value). Lower for scripts where meaningful
@@ -612,32 +668,157 @@ def is_word(tok):
     return any(c.startswith("L") for c in cats) and all(c[0] in "LM" for c in cats)
 
 def merge_negations(tokens, lang_code, stop_words):
-    neg_words = NEGATION_WORDS.get(lang_code, [])
+    """Token-list negation (Chinese, Thai, Indonesian, Arabic): a negation word
+    is merged with the next content token, skipping intensifiers/stopwords in
+    between ("tidak terlalu segar" → tidak_segar, "不是很新鲜" → not_新鲜)."""
+    neg_words = set(NEGATION_WORDS.get(lang_code, []))
     if not neg_words:
         return tokens
+    skip = INTENSIFIERS.get(lang_code, set())
     merged, i, n = [], 0, len(tokens)
     while i < n:
         t = tokens[i]
-        if t in neg_words and i + 1 < n and tokens[i + 1] not in stop_words:
-            prefix = "not" if lang_code == "zh" else t
-            merged.append(f"{prefix}_{tokens[i + 1]}")
-            i += 2
-        else:
-            merged.append(t)
-            i += 1
+        if t in neg_words:
+            j = i + 1
+            while j < n and j <= i + 3 and (tokens[j] in skip or tokens[j] in stop_words) and tokens[j] not in neg_words:
+                j += 1
+            if j < n and j <= i + 3 and tokens[j] not in neg_words and tokens[j] not in stop_words:
+                prefix = "not" if lang_code == "zh" else t
+                merged.append(f"{prefix}_{tokens[j]}")
+                i = j + 1
+                continue
+        merged.append(t)
+        i += 1
     return merged
 
+def _norm_apostrophes(text):
+    return text.replace("’", "'").replace("‘", "'").replace("`", "'")
+
+def spacy_negation_lemmas(doc, lang_code, neg_surfaces=None):
+    """Lemmas from a spaCy doc, with negations merged into 'not_<lemma>'
+    tokens using part-of-speech tags. neg_surfaces (optional dict) collects
+    the original wording of each negated token for display (Japanese)."""
+    toks = list(doc)
+    n = len(toks)
+    neg_words = set(NEGATION_WORDS.get(lang_code, []))
+    skip_words = INTENSIFIERS.get(lang_code, set())
+    consumed, negated = set(), {}
+
+    def lower(t):
+        return _norm_apostrophes(t.lower_)
+
+    def is_content(t):
+        return (t.pos_ in _CONTENT_POS and (t.is_alpha or lang_code == "ja")
+                and lower(t) not in skip_words and lower(t) not in neg_words and t.lemma_ not in JA_NEG)
+
+    def find_forward(i):
+        for j in range(i + 1, min(n, i + 6)):
+            t = toks[j]
+            if t.is_punct:
+                return None
+            if j in consumed or lower(t) in neg_words:
+                return None
+            if lower(t) in skip_words or t.pos_ in _SKIP_POS:
+                continue
+            if is_content(t):
+                return j
+            return None
+        return None
+
+    def find_backward(i, max_back=4):
+        for j in range(i - 1, max(-1, i - 1 - max_back), -1):
+            t = toks[j]
+            if t.is_punct:
+                return None
+            if j in negated or j in consumed:
+                return None
+            if t.pos_ in ("VERB", "ADJ") and is_content(t):
+                return j
+        return None
+
+    def prefer_adjective(target):
+        """Linking verb followed by an adjective → negate the adjective."""
+        if target is None or toks[target].pos_ not in ("VERB", "AUX"):
+            return target
+        if toks[target].lemma_.lower() not in LINKING_VERBS:
+            return target
+        nxt = find_forward(target)
+        return nxt if nxt is not None and toks[nxt].pos_ in ("ADJ", "ADV") else target
+
+    for i, t in enumerate(toks):
+        if i in consumed:
+            continue
+        low = lower(t)
+        if lang_code == "ja":
+            if t.lemma_ in JA_NEG or t.text in JA_NEG:
+                consumed.add(i)
+                j = i - 1
+                while j >= 0 and i - j <= 6 and not toks[j].is_punct and (
+                        toks[j].lemma_ in JA_SKIP or toks[j].text in JA_SKIP or toks[j].lemma_ in JA_NEG
+                        or toks[j].pos_ in ("ADP", "AUX", "PART", "SCONJ")):
+                    j -= 1
+                if j >= 0 and j not in negated and not toks[j].is_punct and toks[j].pos_ in _CONTENT_POS:
+                    negated[j] = doc.text[toks[j].idx: t.idx + len(t.text)]
+                    consumed.update(range(j + 1, i))   # じゃ / で / は / あり / ませ …
+            continue
+        if lang_code == "fr" and low in FR_NE:
+            k = next((k for k in range(i + 1, min(n, i + 6)) if lower(toks[k]) in FR_CLOSERS), None)
+            consumed.add(i)
+            if k is not None:
+                consumed.add(k)
+                verbs = [j for j in range(i + 1, k) if toks[j].pos_ == "VERB" and is_content(toks[j])]
+                target = verbs[-1] if verbs else find_forward(k)
+                if verbs and toks[target].lemma_.lower() in LINKING_VERBS:
+                    adj = find_forward(k)
+                    if adj is not None and toks[adj].pos_ in ("ADJ", "ADV"):
+                        target = adj
+                if target is not None:
+                    negated[target] = None
+            continue
+        if low in neg_words:
+            consumed.add(i)
+            target = prefer_adjective(find_forward(i))
+            if target is None:
+                target = find_backward(i)
+            if target is not None:
+                negated[target] = None
+
+    lemmas = []
+    for i, t in enumerate(toks):
+        if i in consumed:
+            continue
+        lemma = t.lemma_.lower() if t.lemma_ else t.lower_
+        if i in negated:
+            tok = f"not_{lemma}"
+            lemmas.append(tok)
+            if neg_surfaces is not None and negated[i]:
+                neg_surfaces.setdefault(tok, Counter())[negated[i]] += 1
+        elif t.is_alpha:
+            lemmas.append(lemma)
+    return lemmas
+
+def _regex_negation(text, lang_code):
+    """Fallback when no spaCy model is loaded: 'neg [intensifiers] word' → not_word."""
+    neg_words = [w for w in NEGATION_WORDS.get(lang_code, []) if w != "n't"]
+    if not neg_words:
+        return text
+    skip = sorted(INTENSIFIERS.get(lang_code, set()) - {""}, key=len, reverse=True)
+    skip_re = (r"(?:(?:" + "|".join(re.escape(w) for w in skip) + r")\s+){0,3}") if skip else ""
+    pat = r"\b(?:" + "|".join(re.escape(w) for w in neg_words) + r")\s+" + skip_re + r"([^\W\d_]+)"
+    return re.sub(pat, r"not_\1", text, flags=re.UNICODE)
+
 def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_words,
-               jieba_mod=None, thai_tok=None, pre_lemmas=None):
+               jieba_mod=None, thai_tok=None, pre_lemmas=None, neg_surfaces=None):
     """Returns the filtered lemma list for one verbatim.
-    pre_lemmas: lemmas already produced by Stanza (Arabic / Indonesian)."""
+    pre_lemmas: lemmas already produced by Stanza (Arabic / Indonesian).
+    neg_surfaces: optional dict collecting original wordings of negated tokens."""
     if pre_lemmas is not None:
         lemmas = [clean_token(t, lang_code) for t in pre_lemmas]
         lemmas = [t for t in lemmas if is_word(t)]
     else:
         if not isinstance(text, str) or not text.strip():
             return []
-        text = text.lower()
+        text = _norm_apostrophes(text.lower())
         if lang_code == "zh":
             if jieba_mod is not None:
                 lemmas = [t for t in jieba_mod.cut(text) if re.search(r"\w", t)]
@@ -649,24 +830,15 @@ def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_wor
             else:
                 lemmas = text.split()
             lemmas = [t for t in lemmas if is_word(t)]
+        elif spacy_nlp is not None:
+            lemmas = spacy_negation_lemmas(spacy_nlp(text), lang_code, neg_surfaces)
         else:
-            neg_words = NEGATION_WORDS.get(lang_code, [])
-            if neg_words:
-                neg_pattern = r"\b(" + "|".join(re.escape(w) for w in neg_words) + r")\s+(\w+)"
-                text = re.sub(neg_pattern, r"not_\2", text, flags=re.UNICODE)
-            if spacy_nlp is not None:
-                doc = spacy_nlp(text)
-                lemmas = []
-                for tok in doc:
-                    if NEG_TOKEN_RE.fullmatch(tok.text):
-                        lemmas.append(tok.text)          # keep negated forms ("not_fresh")
-                    elif tok.is_alpha:
-                        lemmas.append(tok.lemma_.lower())
-            elif lang_code == "en":
-                tokens = re.findall(r"not_[^\W\d_]+|[^\W\d_][^\W\d_]+", text, flags=re.UNICODE)
+            text = _regex_negation(text, lang_code)
+            tokens = re.findall(r"not_[^\W\d_]+|[^\W\d_][^\W\d_]+", text, flags=re.UNICODE)
+            if lang_code == "en":
                 lemmas = [t if t.startswith("not_") else lemmatizer_en.lemmatize(t) for t in tokens]
             else:
-                lemmas = re.findall(r"not_[^\W\d_]+|[^\W\d_][^\W\d_]+", text, flags=re.UNICODE)
+                lemmas = tokens
 
     if lang_code in TOKEN_NEGATION_LANGS:
         lemmas = merge_negations(lemmas, lang_code, stop_words | custom_stops)
@@ -727,10 +899,33 @@ def apply_spelling_corrections(text, correction_map):
         return corrected
     return WORD_PATTERN.sub(repl, text)
 
-def display_label(word, lang_code=None):
-    """Phrase tokens are stored as 'easy_apply' and shown as 'easy apply'
-    (Thai is written without spaces, so its phrases are simply joined)."""
-    return word.replace("_", "" if lang_code == "th" else " ")
+def display_label(word, lang_code=None, neg_display=None):
+    """Internal token → label shown in the cloud.
+    • phrases 'easy_apply' → 'easy apply' (Thai joined without spaces)
+    • negations 'not_frais' → 'pas frais', 'not_frisch' → 'nicht frisch',
+      'not_新鲜' → '不新鲜', Japanese → most frequent original wording ('強くない')."""
+    if neg_display and word in neg_display:
+        return neg_display[word]
+    parts = word.split("_")
+    out, i = [], 0
+    while i < len(parts):
+        p = parts[i]
+        if p == "not" and i + 1 < len(parts):
+            nxt = parts[i + 1]
+            key = "not_" + nxt
+            if neg_display and key in neg_display:
+                out.append(neg_display[key])
+            elif lang_code == "ja":
+                out.append(nxt + "ない")
+            elif lang_code == "zh":
+                out.append("不" + nxt)
+            else:
+                out.append(f"{NEG_DISPLAY_PREFIX.get(lang_code, 'not')} {nxt}")
+            i += 2
+        else:
+            out.append(p)
+            i += 1
+    return ("" if lang_code == "th" else " ").join(out)
 
 # ─── Phrase (bigram) detection ────────────────────────────────────────────────
 def extract_top_bigrams(token_lists, min_freq=4, top_n=30):
@@ -899,13 +1094,13 @@ CANVAS_PRESETS = {
 }
 
 def render_wordcloud(freqs, color_of, font_path, width, height, max_words, min_font,
-                     max_font, relative_scaling, margin, background, scale, lang_code):
+                     max_font, relative_scaling, margin, background, scale, lang_code, label_fn=None):
     """freqs: {internal_word: weight}; color_of: internal_word → 'rgb(...)'.
     Always horizontal (prefer_horizontal=1.0)."""
     disp_to_orig = {}
     disp_freqs = {}
     for w, v in freqs.items():
-        d = shape_for_render(display_label(w, lang_code), lang_code)
+        d = shape_for_render(label_fn(w) if label_fn else display_label(w, lang_code), lang_code)
         disp_to_orig[d] = w
         disp_freqs[d] = disp_freqs.get(d, 0) + v
 
@@ -1197,6 +1392,7 @@ if uploaded_file and df is not None:
                         analysis_col = "_analysis_text"
 
             # Tokenise / lemmatise
+            neg_surfaces = {}   # Japanese: original wording of each negated token
             if engine == "stanza":
                 bar = st.progress(0.0, text=f"Stanza lemmatization ({len(df)} verbatims)…")
                 raw = df[analysis_col].tolist()
@@ -1211,7 +1407,7 @@ if uploaded_file and df is not None:
             else:
                 df["tokens"] = df[analysis_col].apply(
                     lambda x: preprocess(x, code, lemmatizer_en, spacy_nlp, all_stops, stop_words,
-                                         jieba_mod=jieba_mod, thai_tok=thai_tok)
+                                         jieba_mod=jieba_mod, thai_tok=thai_tok, neg_surfaces=neg_surfaces)
                 )
 
             # Bigrams → single phrase tokens before counting/clustering
@@ -1232,6 +1428,7 @@ if uploaded_file and df is not None:
                 "group_col": group_col_choice if group_col_choice != "None" else None,
                 "lang_code": code,
                 "lang_name": lang_choice,
+                "neg_display": {t: c.most_common(1)[0][0] for t, c in neg_surfaces.items()},
                 "run_id": st.session_state.get("results", {}).get("run_id", 0) + 1,
                 "n_before_filter": n_before_filter,
                 "n_after_filter": len(df),
@@ -1254,7 +1451,7 @@ if "results" in st.session_state:
     group_col    = res.get("group_col")
     lang_code    = res["lang_code"]
     res_min_freq = min_freq          # live sidebar values: re-clustering is instant
-    dl = lambda w: display_label(w, lang_code)
+    dl = lambda w: display_label(w, lang_code, res.get("neg_display"))
     analysis_cache = st.session_state.setdefault("analysis_cache", {})
 
     def get_analysis(product_col, code_value, rows):
@@ -1543,6 +1740,7 @@ if "results" in st.session_state:
             wc = render_wordcloud(
                 render_freqs, render_color, font_path, w_px, h_px, max_words, lo, hi,
                 rel_scaling, margin, background, export_scale, render_lang,
+                label_fn=dl if render_lang == lang_code else (lambda x: x),
             )
         img = wc.to_image()
         st.image(img, use_container_width=True)
@@ -1656,7 +1854,8 @@ if "results" in st.session_state:
                     r_lang = "en"
             lo_, hi_ = font_range[0], max(font_range[1], font_range[0] + 1)
             wc_ = render_wordcloud(r_freqs, r_color, font_path, *CANVAS_PRESETS[canvas_choice], max_words,
-                                   lo_, hi_, rel_scaling, margin, background, export_scale, r_lang)
+                                   lo_, hi_, rel_scaling, margin, background, export_scale, r_lang,
+                                   label_fn=dl if r_lang == lang_code else (lambda x: x))
             out_rows = []
             for w in sorted(freqs, key=lambda w: -freqs[w]):
                 out_rows.append({
