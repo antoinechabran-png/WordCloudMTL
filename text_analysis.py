@@ -11,6 +11,7 @@ CONNECTORS = {
     "de": {"zu", "zum", "zur", "von", "für", "mit"},
     "pt": {"de", "do", "da", "para", "com"},
     "zh": {"的"}, "ja": {"の"}, "th": {"ของ"},
+    "vi": {"của", "cho", "với", "để"}, "tl": {"ng", "sa", "na", "para"},
     "id": {"untuk", "dengan"}, "ar": {"من", "في", "ب"},
 }
 

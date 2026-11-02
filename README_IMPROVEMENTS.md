@@ -1,8 +1,8 @@
 # Word cloud improvements — 2 November 2026
 
 The existing project has been updated in place. This package is a portable copy.
-Keep `app.py` and the new `text_analysis.py` together. Existing requirements.txt,
-packages.txt and runtime.txt are unchanged; no additional production dependency
+Keep `app.py`, `text_analysis.py`, and `language_rules.py` together. See README_LANGUAGES.md for the latest language additions and dependency update. The language update raises the Stanza minimum version in requirements.txt;
+packages.txt and runtime.txt remain unchanged; no additional production dependency
 is required by the new phrase-processing module.
 
 ## Run
@@ -13,7 +13,7 @@ Install requirements as for the original app, then run:
 streamlit run app.py
 ```
 
-For an existing deployment, deploy both Python files and restart the app. Generate
+For an existing deployment, deploy all three Python modules and restart the app. Generate
 the analysis again; results from an already-running older session lack the new
 structural token stream.
 

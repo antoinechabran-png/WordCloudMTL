@@ -15,6 +15,7 @@ import tempfile
 import unicodedata
 from wordcloud import WordCloud
 import matplotlib
+from language_rules import EXTRA_STOPWORDS, lexical_or_boundary, merge_language_modifiers, vietnamese_sentence_tokens
 from text_analysis import BOUNDARY, extract_phrases, select_terms, response_statistics, translated_weights
 
 try:
@@ -37,9 +38,9 @@ nltk.download("omw-1.4",  quiet=True)
 #   jieba    → Chinese word segmentation (no spaces between words)
 #   thai     → PyThaiNLP "newmm" segmentation (Thai has no spaces between
 #              words either) + PyThaiNLP's bundled Thai stopword list
-#   stanza   → Stanford Stanza (tokenize + mwt + pos + lemma). Used for Arabic
-#              and Indonesian. NOT imported at startup: `import stanza` (and
-#              torch behind it) only happens the first time one of these two
+#   stanza   → Stanford Stanza (tokenize + mwt + pos + lemma). Used for Arabic,
+#              Indonesian and Vietnamese. NOT imported at startup: `import stanza` (and
+#              torch behind it) only happens the first time one of these
 #              languages is analysed, and its model is downloaded at that
 #              moment (first use only, then reused from disk/cache).
 LANGUAGES = {
@@ -53,6 +54,8 @@ LANGUAGES = {
     "Japanese":   {"code": "ja", "nltk_stop": None,         "spacy_model": "ja_core_news_sm", "engine": "spacy"},
     "Thai":       {"code": "th", "nltk_stop": None,         "spacy_model": None,              "engine": "thai"},
     "Indonesian": {"code": "id", "nltk_stop": "indonesian", "spacy_model": None,              "engine": "stanza"},
+    "Vietnamese": {"code": "vi", "nltk_stop": None, "spacy_model": None, "engine": "stanza"},
+    "Tagalog":    {"code": "tl", "nltk_stop": None, "spacy_model": None, "engine": "spacy_blank"},
     "Arabic":     {"code": "ar", "nltk_stop": "arabic",     "spacy_model": None,              "engine": "stanza"},
 }
 
@@ -208,6 +211,15 @@ MOD_DISPLAY["nottoo"] = {
     "zh": "不太{}", "ja": "{}すぎない", "th": "ไม่{}เกินไป",
     "id": "tidak terlalu {}", "ar": "ليس {} بشكل مفرط",
 }
+NEG_DISPLAY_PREFIX.update({"vi": "không", "tl": "hindi"})
+for _kind, _vi, _tl in [
+    ("nottoo", "không quá {}", "hindi masyadong {}"),
+    ("notenough", "không đủ {}", "hindi sapat ang {}"),
+    ("toolittle", "không đủ {}", "kulang sa {}"),
+    ("too", "quá {}", "masyadong {}"),
+    ("toomuch", "quá nhiều {}", "sobrang daming {}"),
+]:
+    MOD_DISPLAY[_kind].update({"vi": _vi, "tl": _tl})
 MOD_KINDS = ("nottoo", "notenough", "toolittle", "toomuch", "too", "not")
 # English wording used when the cloud is translated: (prefix, suffix)
 MOD_ENGLISH = {"nottoo": ("not too ", ""), "not": ("not ", ""), "notenough": ("not ", " enough"), "toolittle": ("not enough ", ""), "too": ("too ", ""),
@@ -595,6 +607,16 @@ def shape_for_render(text, lang_code):
         return text
 
 # ─── NLP loaders (all lazy — only the selected language is ever loaded) ──────
+@st.cache_resource(show_spinner=False)
+def load_tagalog_tokenizer():
+    """Basic language tokenizer; intentionally no invented lemmas/POS tags."""
+    try:
+        import spacy
+        return spacy.blank("tl"), None
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+
 @st.cache_resource
 def load_lemmatizer():
     return WordNetLemmatizer()
@@ -657,8 +679,8 @@ def _stanza_resources_dir():
 
 @st.cache_resource(show_spinner=False)
 def load_stanza(lang_code):
-    """Imports Stanza (and torch) ONLY when called — i.e. only when Arabic or
-    Indonesian is actually analysed. Downloads the language model on first use
+    """Imports Stanza (and torch) ONLY when called — i.e. only when Arabic,
+    Indonesian or Vietnamese is actually analysed. Downloads the language model on first use
     (reused afterwards). Returns (pipeline, error)."""
     try:
         import stanza
@@ -678,10 +700,15 @@ def load_stanza(lang_code):
     last_err = None
     # Not every language ships an MWT (multi-word token) model — try with it
     # first (Arabic needs it to split clitics), then without.
-    for procs in ("tokenize,mwt,pos,lemma", "tokenize,pos,lemma"):
+    # Vietnamese's official lemma processor is identity; only word
+    # segmentation is learned here, so loading POS/character models is unnecessary.
+    processor_options = ("tokenize,lemma",) if lang_code == "vi" else ("tokenize,mwt,pos,lemma", "tokenize,pos,lemma")
+    for procs in processor_options:
         try:
             kwargs = dict(lang=lang_code, processors=procs, use_gpu=False,
                           verbose=False, download_method=dl)
+            if lang_code == "vi":
+                kwargs["package"] = "default_fast"
             if model_dir:
                 kwargs["dir"] = model_dir
             return stanza.Pipeline(**kwargs), None
@@ -698,7 +725,7 @@ def stanza_lemmatize(texts, nlp, progress_cb=None, batch_size=64):
     total = len(idx)
     for start in range(0, total, batch_size):
         chunk = idx[start:start + batch_size]
-        docs = [stanza.Document([], text=texts[i]) for i in chunk]
+        docs = [stanza.Document([], text=unicodedata.normalize("NFC", texts[i])) for i in chunk]
         try:
             docs = nlp(docs)
         except Exception:
@@ -706,14 +733,15 @@ def stanza_lemmatize(texts, nlp, progress_cb=None, batch_size=64):
             docs = []
             for i in chunk:
                 try:
-                    docs.append(nlp(texts[i]))
+                    docs.append(nlp(unicodedata.normalize("NFC", texts[i])))
                 except Exception:
                     docs.append(None)
         for i, d in zip(chunk, docs):
             if d is None:
                 continue
             out[i] = [t for sentence in d.sentences
-                      for t in [*(w.lemma or w.text for w in sentence.words), BOUNDARY]]
+                      for t in [*(vietnamese_sentence_tokens(sentence, d.text) if nlp.lang == "vi"
+                                   else (w.lemma or w.text for w in sentence.words)), BOUNDARY]]
         if progress_cb:
             progress_cb(min(1.0, (start + len(chunk)) / max(1, total)))
     return out
@@ -726,6 +754,11 @@ def load_stopwords(nltk_lang):
         return set(stopwords.words(nltk_lang))
     except Exception:
         return set()
+
+DEFAULT_EXCLUSIONS_BY_LANG.update({
+    "Vietnamese": ["sản_phẩm"],
+    "Tagalog": ["produkto", "product"],
+})
 
 # ─── Tokenization ────────────────────────────────────────────────────────────
 WORD_PATTERN = re.compile(r"\b[^\W\d_][^\W\d_]+\b", re.UNICODE)
@@ -1102,8 +1135,11 @@ def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_wor
     pre_lemmas: lemmas already produced by Stanza (Arabic / Indonesian).
     neg_surfaces: optional dict collecting original wordings of negated tokens."""
     if pre_lemmas is not None:
-        lemmas = [clean_token(t, lang_code) for t in pre_lemmas]
-        lemmas = [t if is_word(t) else BOUNDARY for t in lemmas]
+        if lang_code == "vi":
+            lemmas = [lexical_or_boundary(t, lang_code) for t in pre_lemmas]
+        else:
+            lemmas = [clean_token(t, lang_code) for t in pre_lemmas]
+            lemmas = [t if is_word(t) else BOUNDARY for t in lemmas]
     else:
         if not isinstance(text, str) or not text.strip():
             return []
@@ -1119,6 +1155,11 @@ def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_wor
             else:
                 lemmas = re.findall(r"[^\W\d_]+|[^\w\s]", text)
             lemmas = [t if is_word(t) else BOUNDARY for t in lemmas]
+        elif lang_code == "tl":
+            if spacy_nlp is None:
+                raise ValueError("The Tagalog tokenizer is unavailable; install spaCy before analysing Tagalog.")
+            lemmas = [lexical_or_boundary(t.text, "tl") for t in spacy_nlp(text)
+                      if not t.is_space or "\n" in t.text]
         elif spacy_nlp is not None:
             lemmas = spacy_negation_lemmas(spacy_nlp(text), lang_code, neg_surfaces)
         else:
@@ -1130,6 +1171,8 @@ def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_wor
             else:
                 lemmas = tokens
 
+    if lang_code in EXTRA_STOPWORDS:
+        lemmas = merge_language_modifiers(lemmas, lang_code)
     if lang_code in TOKEN_NEGATION_LANGS:
         lemmas = merge_negations(lemmas, lang_code, stop_words | custom_stops)
 
@@ -1284,6 +1327,8 @@ HELSINKI_MODELS = {
     "ja": ["Helsinki-NLP/opus-mt-ja-en", "Helsinki-NLP/opus-mt-mul-en"],
     "th": ["Helsinki-NLP/opus-mt-th-en", "Helsinki-NLP/opus-mt-mul-en"],
     "id": ["Helsinki-NLP/opus-mt-id-en", "Helsinki-NLP/opus-mt-mul-en"],
+    "vi": ["Helsinki-NLP/opus-mt-vi-en"],
+    "tl": ["Helsinki-NLP/opus-mt-tl-en"],
     "ar": ["Helsinki-NLP/opus-mt-ar-en", "Helsinki-NLP/opus-mt-mul-en"],
 }
 
@@ -1432,8 +1477,8 @@ with st.sidebar:
     lang_choice = st.selectbox("🌍 Verbatim language", list(LANGUAGES.keys()), index=0, key="lang_choice")
     lang_info = LANGUAGES[lang_choice]
 
-    if lang_choice in SUGGESTED_EXTRA_EXCLUSIONS and st.session_state.get("_excl_prefilled_for") != lang_choice:
-        st.session_state["user_extra_stops"] = ", ".join(SUGGESTED_EXTRA_EXCLUSIONS[lang_choice])
+    if st.session_state.get("_excl_prefilled_for") != lang_choice:
+        st.session_state["user_extra_stops"] = ", ".join(SUGGESTED_EXTRA_EXCLUSIONS.get(lang_choice, []))
         st.session_state["_excl_prefilled_for"] = lang_choice
 
     # Only the selected language's tools are touched here. Stanza is NOT
@@ -1461,6 +1506,13 @@ with st.sidebar:
             st.caption("⚠️ PyThaiNLP failed to load — Thai text will only be split on spaces (poor results).")
             if _thai_err:
                 st.caption(f"Technical detail: `{_thai_err}`")
+    elif lang_info["engine"] == "spacy_blank":
+        st.caption("Tagalog uses basic tokenization and explicit negation rules. "
+                   "Word forms are retained; there is no trained lemmatizer or grammar parser. "
+                   "Review mixed Tagalog/English responses carefully.")
+    elif lang_info["code"] == "vi":
+        st.caption("Vietnamese uses Stanza word segmentation and retains word forms "
+                   "(its lemma processor is identity). The model downloads on first Generate.")
     elif lang_info["engine"] == "stanza":
         st.caption(
             f"🧠 {lang_choice} is lemmatized with **Stanza**. It is loaded only when you click "
@@ -1601,11 +1653,17 @@ if uploaded_file and df is not None:
         engine = lang_info["engine"]
         lemmatizer_en = load_lemmatizer()
         spacy_nlp = load_spacy_model(lang_info["spacy_model"])[0] if engine == "spacy" else None
+        if engine == "spacy_blank":
+            spacy_nlp, tokenizer_error = load_tagalog_tokenizer()
+            if spacy_nlp is None:
+                st.error(f"Tagalog tokenizer could not be loaded: {tokenizer_error}")
+                load_tagalog_tokenizer.clear()
+                st.stop()
         jieba_mod = load_jieba()[0] if engine == "jieba" else None
         thai_tok, thai_sw = (None, set())
         if engine == "thai":
             thai_tok, thai_sw, _ = load_thai()
-        stop_words = set(clean_token(w, code) for w in load_stopwords(lang_info["nltk_stop"])) | thai_sw
+        stop_words = set(clean_token(w, code) for w in load_stopwords(lang_info["nltk_stop"])) | thai_sw | EXTRA_STOPWORDS.get(code, set())
 
         stanza_nlp = None
         if engine == "stanza":
