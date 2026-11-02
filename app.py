@@ -3,8 +3,6 @@ import pandas as pd
 import nltk
 from nltk.stem import WordNetLemmatizer
 from nltk.corpus import stopwords
-from nltk.collocations import BigramCollocationFinder
-from nltk.metrics import BigramAssocMeasures
 from sklearn.feature_extraction.text import TfidfVectorizer
 import networkx as nx
 from collections import Counter
@@ -17,6 +15,7 @@ import tempfile
 import unicodedata
 from wordcloud import WordCloud
 import matplotlib
+from text_analysis import BOUNDARY, extract_phrases, select_terms, response_statistics, translated_weights
 
 try:
     import community as community_louvain  # python-louvain
@@ -203,9 +202,15 @@ MOD_DISPLAY = {
                   "de": "zu viel {}", "pt": "demasiado {}", "zh": "太多{}", "ja": "{}が多すぎる",
                   "th": "{}มากเกินไป", "id": "terlalu banyak {}", "ar": "{} أكثر من اللازم"},
 }
-MOD_KINDS = ("notenough", "toolittle", "toomuch", "too", "not")
+MOD_DISPLAY["nottoo"] = {
+    "en": "not too {}", "fr": "pas trop {}", "es": "no demasiado {}",
+    "it": "non troppo {}", "de": "nicht zu {}", "pt": "não demasiado {}",
+    "zh": "不太{}", "ja": "{}すぎない", "th": "ไม่{}เกินไป",
+    "id": "tidak terlalu {}", "ar": "ليس {} بشكل مفرط",
+}
+MOD_KINDS = ("nottoo", "notenough", "toolittle", "toomuch", "too", "not")
 # English wording used when the cloud is translated: (prefix, suffix)
-MOD_ENGLISH = {"not": ("not ", ""), "notenough": ("not ", " enough"), "toolittle": ("not enough ", ""), "too": ("too ", ""),
+MOD_ENGLISH = {"nottoo": ("not too ", ""), "not": ("not ", ""), "notenough": ("not ", " enough"), "toolittle": ("not enough ", ""), "too": ("too ", ""),
                "toomuch": ("too much ", "")}
 
 # Default exclusion words, translated per language (best-effort — editable
@@ -707,7 +712,8 @@ def stanza_lemmatize(texts, nlp, progress_cb=None, batch_size=64):
         for i, d in zip(chunk, docs):
             if d is None:
                 continue
-            out[i] = [(w.lemma or w.text) for s in d.sentences for w in s.words]
+            out[i] = [t for sentence in d.sentences
+                      for t in [*(w.lemma or w.text for w in sentence.words), BOUNDARY]]
         if progress_cb:
             progress_cb(min(1.0, (start + len(chunk)) / max(1, total)))
     return out
@@ -770,7 +776,7 @@ def merge_negations(tokens, lang_code, stop_words):
         while j < len(tokens) and j <= i + 3 and skippable(tokens[j]):
             skipped.append(tokens[j])
             j += 1
-        if j < len(tokens) and j <= i + 3 and tokens[j] not in markers and tokens[j] not in stop_words:
+        if j < len(tokens) and j <= i + 3 and tokens[j] != BOUNDARY and tokens[j] not in markers and tokens[j] not in stop_words:
             return j, skipped
         return None, skipped
 
@@ -779,10 +785,16 @@ def merge_negations(tokens, lang_code, stop_words):
         p = len(merged) - 1
         while p >= 0 and len(merged) - p <= 7:
             w = merged[p]
+            if w == BOUNDARY:
+                return False
             if w in neg_words or w in TOKEN_POST_FILLERS or w in skip or w in stop_words:
                 p -= 1                           # "สดไม่พอ": bare negation absorbed below
                 continue
-            if w.startswith(("notenough_", "too_", "toomuch_")):
+            if kind == "notenough" and not (
+                    w.startswith(neg_prefixes + ("notenough_",))
+                    or any(t in neg_words for t in merged[p + 1:])):
+                return False
+            if w.startswith(("notenough_", "too_", "toomuch_", "nottoo_")):
                 return True
             base = w
             for pre in neg_prefixes:
@@ -810,6 +822,8 @@ def merge_negations(tokens, lang_code, stop_words):
             if j is not None:
                 if t in too_pre and t not in neg_words:
                     merged.append(f"too_{tokens[j]}")
+                elif t in neg_words and any(s in too_pre for s in skipped):
+                    merged.append(f"nottoo_{tokens[j]}")
                 elif t in ne_pre or any(s in enough_post for s in skipped):
                     merged.append(f"notenough_{tokens[j]}")
                 else:
@@ -855,7 +869,7 @@ def spacy_negation_lemmas(doc, lang_code, neg_surfaces=None):
         for j in range(i + 1, min(n, i + 1 + max_ahead)):
             t = toks[j]
             lw = lower(t)
-            if t.is_punct or j in consumed or lw in neg_words:
+            if t.is_punct or "\n" in t.text or t.pos_ in ("CCONJ", "SCONJ") or j in consumed or lw in neg_words:
                 return None, skipped
             if lw in skip_words or lw in modifier_words or t.pos_ in _SKIP_POS:
                 skipped.add(lw)
@@ -868,7 +882,7 @@ def spacy_negation_lemmas(doc, lang_code, neg_surfaces=None):
     def find_backward(i, max_back=4):
         for j in range(i - 1, max(-1, i - 1 - max_back), -1):
             t = toks[j]
-            if t.is_punct or j in mods or j in consumed:
+            if t.is_punct or "\n" in t.text or t.pos_ in ("CCONJ", "SCONJ") or j in mods or j in consumed:
                 return None
             if t.pos_ in ("VERB", "ADJ") and is_content(t):
                 return j
@@ -897,6 +911,8 @@ def spacy_negation_lemmas(doc, lang_code, neg_surfaces=None):
     def set_negation(target, skipped, start=None):
         after = enough_after(target)
         kind = "notenough" if (skipped & enough) or after else "not"
+        if skipped & too_words:
+            kind = "nottoo"
         if kind == "notenough" and toks[target].pos_ in ("NOUN", "PROPN"):
             kind = "toolittle"
         if start is not None and start < target:
@@ -911,6 +927,12 @@ def spacy_negation_lemmas(doc, lang_code, neg_surfaces=None):
         if i in consumed or i in mods:
             continue
         low = lower(t)
+        only_words = {"en": {"only", "just"}, "fr": {"seulement", "uniquement"},
+                      "es": {"solo", "solamente"}, "it": {"solo", "soltanto"},
+                      "de": {"nur"}, "pt": {"só", "somente", "apenas"}}
+        if low in neg_words and i + 1 < n and lower(toks[i + 1]) in only_words.get(lang_code, set()):
+            consumed.update((i, i + 1))
+            continue
 
         # ── Japanese: endings attach backwards ───────────────────────────────
         if lang_code == "ja":
@@ -923,6 +945,12 @@ def spacy_negation_lemmas(doc, lang_code, neg_surfaces=None):
                         toks[j].lemma_ in JA_SKIP or toks[j].text in JA_SKIP or toks[j].lemma_ in JA_NEG
                         or toks[j].pos_ in ("ADP", "AUX", "PART", "SCONJ")):
                     j -= 1
+                if is_neg and j >= 0 and (toks[j].lemma_ in JA_TOO or toks[j].text in JA_TOO):
+                    previous = next((k for k in range(j - 1, max(-1, j - 7), -1)
+                                     if k in mods and mods[k][0] == "too"), None)
+                    if previous is not None:
+                        mods[previous] = ["nottoo", doc.text[toks[previous].idx:t.idx + len(t.text)]]
+                        continue
                 if j < 0 or j in mods or toks[j].is_punct or toks[j].pos_ not in _CONTENT_POS:
                     continue
                 kind = "too" if is_too else "not"
@@ -940,7 +968,16 @@ def spacy_negation_lemmas(doc, lang_code, neg_surfaces=None):
 
         # ── French "ne … pas [assez] X" ───────────────────────────────────────
         if lang_code == "fr" and low in FR_NE:
-            k = next((k for k in range(i + 1, min(n, i + 6)) if lower(toks[k]) in FR_CLOSERS), None)
+            k = None
+            for candidate in range(i + 1, min(n, i + 6)):
+                if toks[candidate].is_punct or "\n" in toks[candidate].text:
+                    break
+                if lower(toks[candidate]) in FR_CLOSERS:
+                    k = candidate
+                    break
+            if k is not None and k + 1 < n and lower(toks[k + 1]) in {"seulement", "uniquement"}:
+                consumed.update((i, k, k + 1))
+                continue
             consumed.add(i)
             if k is not None:
                 consumed.add(k)
@@ -999,7 +1036,7 @@ def spacy_negation_lemmas(doc, lang_code, neg_surfaces=None):
             target, skipped = find_forward(i)
             target = prefer_adjective(target)
             if target is not None and target != find_forward(i)[0]:
-                skipped = skipped | find_forward(target)[1]
+                skipped = skipped | find_forward(find_forward(i)[0])[1]
             start = i
             if target is None:
                 target, skipped, start = find_backward(i), set(), None
@@ -1019,6 +1056,8 @@ def spacy_negation_lemmas(doc, lang_code, neg_surfaces=None):
                 neg_surfaces.setdefault(tok, Counter())[surface] += 1
         elif t.is_alpha:
             lemmas.append(lemma)
+        elif not t.is_space or "\n" in t.text:
+            lemmas.append(BOUNDARY)
     return lemmas
 
 def _regex_negation(text, lang_code):
@@ -1033,12 +1072,19 @@ def _regex_negation(text, lang_code):
     skip = INTENSIFIERS.get(lang_code, set()) - {""} - enough
     skip_re = (r"(?:(?:" + alt(skip) + r")\s+){0,3}") if skip else ""
     neg_skip = (r"(?:(?:" + alt(skip | too) + r")\s+){0,3}") if (skip or too) else ""
+    only = {"en": "only|just", "fr": "seulement|uniquement", "es": "solo|solamente",
+            "it": "solo|soltanto", "de": "nur", "pt": "só|somente|apenas"}.get(lang_code)
+    if only and neg_words:
+        text = re.sub(r"\b(?:" + alt(neg_words) + r")\s+(?:" + only + r")\b", "", text)
+    if neg_words and too:
+        text = re.sub(r"\b(?:" + alt(neg_words) + r")\s+(?:" + alt(too) + r")\s+" + W,
+                      r"nottoo_\1", text)
     if neg_words and enough:      # "not enough fresh", "pas assez frais", "not fresh enough"
         text = re.sub(r"\b(?:" + alt(neg_words) + r")\s+" + skip_re + r"(?:" + alt(enough) + r")\s+" + skip_re + W,
                       r"notenough_\1", text)
         text = re.sub(r"\b(?:" + alt(neg_words) + r")\s+" + skip_re + W + r"\s+(?:" + alt(enough) + r")\b",
                       r"notenough_\1", text)
-    if neg_words:                 # "not (too/very) sweet" → not_sweet
+    if neg_words:                 # plain negation after not-too has been handled
         text = re.sub(r"\b(?:" + alt(neg_words) + r")\s+" + neg_skip + W, r"not_\1", text)
     if lang_code == "de":
         text = re.sub(r"\bzu\s+wenig\s+" + W, r"toolittle_\1", text)
@@ -1051,33 +1097,34 @@ def _regex_negation(text, lang_code):
     return text
 
 def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_words,
-               jieba_mod=None, thai_tok=None, pre_lemmas=None, neg_surfaces=None):
+               jieba_mod=None, thai_tok=None, pre_lemmas=None, neg_surfaces=None, retain_structure=False):
     """Returns the filtered lemma list for one verbatim.
     pre_lemmas: lemmas already produced by Stanza (Arabic / Indonesian).
     neg_surfaces: optional dict collecting original wordings of negated tokens."""
     if pre_lemmas is not None:
         lemmas = [clean_token(t, lang_code) for t in pre_lemmas]
-        lemmas = [t for t in lemmas if is_word(t)]
+        lemmas = [t if is_word(t) else BOUNDARY for t in lemmas]
     else:
         if not isinstance(text, str) or not text.strip():
             return []
         text = _norm_apostrophes(text.lower())
         if lang_code == "zh":
             if jieba_mod is not None:
-                lemmas = [t for t in jieba_mod.cut(text) if re.search(r"\w", t)]
+                lemmas = [t if is_word(t) else BOUNDARY for t in jieba_mod.cut(text) if t.strip() or "\n" in t]
             else:
-                lemmas = [c for c in text if re.search(r"\w", c)]
+                lemmas = [c if is_word(c) else BOUNDARY for c in text if c.strip()]
         elif lang_code == "th":
             if thai_tok is not None:
                 lemmas = [t.strip() for t in thai_tok(text)]
             else:
-                lemmas = text.split()
-            lemmas = [t for t in lemmas if is_word(t)]
+                lemmas = re.findall(r"[^\W\d_]+|[^\w\s]", text)
+            lemmas = [t if is_word(t) else BOUNDARY for t in lemmas]
         elif spacy_nlp is not None:
             lemmas = spacy_negation_lemmas(spacy_nlp(text), lang_code, neg_surfaces)
         else:
             text = _regex_negation(text, lang_code)
-            tokens = re.findall(r"(?:notenough|toolittle|toomuch|too|not)_[^\W\d_]+|[^\W\d_][^\W\d_]+", text, flags=re.UNICODE)
+            tokens = re.findall(r"(?:nottoo|notenough|toolittle|toomuch|too|not)_[^\W\d_]+|[^\W\d_]+|\d+|[^\w\s]|[\r\n]+", text, flags=re.UNICODE)
+            tokens = [t if any(c.isalpha() for c in t) else BOUNDARY for t in tokens]
             if lang_code == "en":
                 lemmas = [t if "_" in t else lemmatizer_en.lemmatize(t) for t in tokens]
             else:
@@ -1086,11 +1133,10 @@ def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_wor
     if lang_code in TOKEN_NEGATION_LANGS:
         lemmas = merge_negations(lemmas, lang_code, stop_words | custom_stops)
 
-    min_len = MIN_LEMMA_LEN.get(lang_code, 2)
-    return [
-        lemma for lemma in lemmas
-        if lemma not in stop_words and lemma not in custom_stops and len(lemma) > min_len
-    ]
+    if retain_structure:
+        return lemmas
+    return [lemma for lemma in lemmas
+            if lemma != BOUNDARY and lemma not in stop_words and lemma not in custom_stops]
 
 def build_subcorpus_mask(texts, keywords, lang_code=None):
     """True if the RAW verbatim contains at least one keyword (case-insensitive).
@@ -1173,31 +1219,6 @@ def display_label(word, lang_code=None, neg_display=None):
             out.append(p)
             i += 1
     return ("" if lang_code == "th" else " ").join(out)
-
-# ─── Phrase (bigram) detection ────────────────────────────────────────────────
-def extract_top_bigrams(token_lists, min_freq=4, top_n=30):
-    docs = [toks for toks in token_lists if len(toks) > 1]
-    if not docs:
-        return set()
-    finder = BigramCollocationFinder.from_documents(docs)
-    finder.apply_freq_filter(min_freq)
-    if not finder.ngram_fd:
-        return set()
-    scored = finder.score_ngrams(BigramAssocMeasures.pmi)
-    return set(bg for bg, _ in scored[:top_n])
-
-def merge_bigrams(tokens, bigram_set):
-    if not bigram_set:
-        return tokens
-    merged, i, n = [], 0, len(tokens)
-    while i < n:
-        if i < n - 1 and (tokens[i], tokens[i + 1]) in bigram_set:
-            merged.append(tokens[i] + "_" + tokens[i + 1])
-            i += 2
-        else:
-            merged.append(tokens[i])
-            i += 1
-    return merged
 
 # ─── TF-IDF ───────────────────────────────────────────────────────────────────
 def compute_tfidf_scores(token_lists):
@@ -1377,6 +1398,7 @@ def analyse_subset(token_lists, min_freq, min_edge, n_clusters):
     already computed, so switching product only redoes counting/clustering."""
     token_lists = list(token_lists)
     word_freq = Counter(itertools.chain.from_iterable(token_lists))
+    response_counts, response_percent = response_statistics(token_lists)
     pair_counts = Counter()
     for tokens in token_lists:
         ut = sorted(set(t for t in tokens if word_freq[t] >= min_freq))
@@ -1392,6 +1414,8 @@ def analyse_subset(token_lists, min_freq, min_edge, n_clusters):
         best_p, best_d, n_components = {}, 0, 0
     return {
         "word_freq": word_freq,
+        "response_counts": response_counts,
+        "response_percent": response_percent,
         "tfidf_scores": compute_tfidf_scores(token_lists),
         "best_p": best_p,
         "cluster_ids": sorted(set(best_p.values())),
@@ -1504,15 +1528,14 @@ with st.sidebar:
     )
     st.markdown("---")
     st.caption("🔤 Phrases & weighting")
-    use_phrases = st.checkbox("Detect common phrases (bigrams)", value=True, key="use_phrases")
-    min_bigram_freq = st.slider(
-        "Min phrase occurrences", 2, 20, 4, key="min_bigram_freq", disabled=not use_phrases
-    )
-    use_tfidf = st.checkbox(
-        "Use TF-IDF weighting instead of raw frequency", value=True, key="use_tfidf",
-        help="Sizes words by how distinctive they are across verbatims instead of by raw "
-             "occurrence count. Applies instantly — no need to regenerate.",
-    )
+    term_mode = st.selectbox("What to display", ["Mixed", "Words", "Phrases"], key="term_mode",
+                             help="Mixed replaces overlapping words with selected phrases. Words preserves individual-word counts.")
+    max_phrase_n = st.selectbox("Maximum phrase length", [2, 3], index=1)
+    min_phrase_responses = st.slider("Min responses containing a phrase", 2, 20, 4)
+    min_phrase_pmi = st.slider("Min phrase association (PMI)", 0.0, 10.0, 0.0, 0.5)
+    weight_mode = st.selectbox("How to size terms", ["Percentage of responses", "Total occurrences", "TF-IDF"])
+    use_tfidf = weight_mode == "TF-IDF"
+    st.caption("Phrase settings apply after Generate. Display and sizing update instantly.")
     use_spellcheck = st.checkbox(
         "✏️ Correct spelling before analysis (beta, English only)", value=False, key="use_spellcheck",
         disabled=(lang_info["code"] != "en"),
@@ -1631,21 +1654,20 @@ if uploaded_file and df is not None:
                     raw, stanza_nlp, progress_cb=lambda p: bar.progress(p, text=f"Stanza lemmatization… {int(p*100)}%")
                 )
                 bar.empty()
-                df["tokens"] = [
-                    preprocess(None, code, lemmatizer_en, None, all_stops, stop_words, pre_lemmas=lem)
+                df["raw_tokens"] = [
+                    preprocess(None, code, lemmatizer_en, None, all_stops, stop_words, pre_lemmas=lem, retain_structure=True)
                     for lem in stanza_lemmas
                 ]
             else:
-                df["tokens"] = df[analysis_col].apply(
+                df["raw_tokens"] = df[analysis_col].apply(
                     lambda x: preprocess(x, code, lemmatizer_en, spacy_nlp, all_stops, stop_words,
-                                         jieba_mod=jieba_mod, thai_tok=thai_tok, neg_surfaces=neg_surfaces)
+                                         jieba_mod=jieba_mod, thai_tok=thai_tok, neg_surfaces=neg_surfaces, retain_structure=True)
                 )
 
-            # Bigrams → single phrase tokens before counting/clustering
-            if use_phrases:
-                top_bigrams = extract_top_bigrams(df["tokens"].tolist(), min_freq=min_bigram_freq, top_n=30)
-                if top_bigrams:
-                    df["tokens"] = df["tokens"].apply(lambda toks: merge_bigrams(toks, top_bigrams))
+            phrase_stops = stop_words | all_stops
+            phrases = extract_phrases(df["raw_tokens"].tolist(), phrase_stops, code,
+                                      min_phrase_responses, max_phrase_n, min_phrase_pmi)
+            df["tokens"] = df["raw_tokens"].apply(lambda ts: select_terms(ts, phrases, phrase_stops, "Words"))
 
             if not any(len(t) for t in df["tokens"]):
                 st.warning("No words left after filtering — check the language, text column or exclusions.")
@@ -1654,6 +1676,8 @@ if uploaded_file and df is not None:
             # Keep every original column (so the product-code column can be
             # changed afterwards without regenerating); drop helper columns.
             st.session_state["results"] = {
+                "phrases": phrases,
+                "phrase_stops": phrase_stops,
                 "resp_df": df.drop(columns=["_analysis_text"], errors="ignore").copy(),
                 "text_col": col,
                 "group_col": group_col_choice if group_col_choice != "None" else None,
@@ -1683,6 +1707,31 @@ if "results" in st.session_state:
     lang_code    = res["lang_code"]
     res_min_freq = min_freq          # live sidebar values: re-clustering is instant
     dl = lambda w: display_label(w, lang_code, res.get("neg_display"))
+    phrases = res.get("phrases", {})
+    with st.expander("Review detected phrases", expanded=False):
+        st.caption("Counts describe candidates before overlap resolution. Negation/modifier expressions count as one token. Longer phrases take priority; ties use response support and association.")
+        excluded = st.multiselect("Exclude phrases", list(phrases),
+                                 format_func=lambda p: dl("_".join(p)),
+                                 key=f"excluded_phrases_{res.get('run_id')}")
+        review_rows = [{"Phrase": dl("_".join(p)), "Tokens": len(p),
+                        "Occurrences": m["occurrences"], "Responses": m["responses"],
+                        "PMI": round(m["pmi"], 2),
+                        "Examples": " | ".join(str(full_df.iloc[i][res["text_col"]]) for i in m["examples"])}
+                       for p, m in sorted(phrases.items(), key=lambda item: (-item[1]["responses"], -len(item[0]), item[0]))]
+        if review_rows:
+            st.dataframe(pd.DataFrame(review_rows), hide_index=True, use_container_width=True)
+        else:
+            st.info("No phrases meet the current thresholds. Lower the phrase threshold and Generate again.")
+    active_phrases = {p: m for p, m in phrases.items() if p not in excluded}
+    full_df = full_df.copy()
+    if "raw_tokens" in full_df:
+        full_df["tokens"] = full_df["raw_tokens"].apply(
+            lambda ts: select_terms(ts, active_phrases, res["phrase_stops"], term_mode))
+    view_key = (term_mode, tuple(sorted(excluded)))
+    if st.session_state.get("analysis_view_key") != view_key:
+        st.session_state["analysis_cache"] = {}
+        st.session_state.pop("codes_zip", None)
+        st.session_state["analysis_view_key"] = view_key
     analysis_cache = st.session_state.setdefault("analysis_cache", {})
 
     def get_analysis(product_col, code_value, rows):
@@ -1854,6 +1903,8 @@ if "results" in st.session_state:
     else:
         scope_freq, scope_tfidf = word_freq, tfidf_scores
 
+    scope_rows = sub if group_value is not None else resp_df
+    scope_responses, scope_percent = response_statistics(scope_rows["tokens"].tolist())
     eligible = [w for w, n in word_freq.items() if n >= res_min_freq and scope_freq.get(w, 0) > 0]
     if cloud_scope == "Entire sample":
         focus_cid = None
@@ -1862,7 +1913,8 @@ if "results" in st.session_state:
         focus_cid = int(cloud_scope.split(" ")[1]) - 1
         words = [w for w in eligible if best_p.get(w) == focus_cid]
 
-    weight = (lambda w: scope_tfidf.get(w, 0.0)) if use_tfidf else (lambda w: float(scope_freq.get(w, 0)))
+    weights = scope_tfidf if use_tfidf else (scope_percent if weight_mode == "Percentage of responses" else scope_freq)
+    weight = lambda w: float(weights.get(w, 0))
     cloud_freqs = {w: weight(w) for w in words if weight(w) > 0}
 
     if focus_cid is None:
@@ -1937,13 +1989,16 @@ if "results" in st.session_state:
                 render_freqs[lab] = render_freqs.get(lab, 0) + v
                 if lab not in best_src or v > cloud_freqs[best_src[lab]]:
                     best_src[lab] = w
+            render_freqs = translated_weights(scope_rows["tokens"].tolist(), final, cloud_freqs,
+                                               weight_mode == "Percentage of responses")
             render_color = lambda lab, _b=best_src: color_of(_b.get(lab, lab))
             render_lang = "en"
             drawn_src = set(top_src)
             n_merged = len(top_src) - len(render_freqs)
             if n_merged > 0:
                 st.caption(f"🇬🇧 Shown in English — {n_merged} words merged with another word that "
-                           "has the same English translation (weights added).")
+                           + ("has the same English translation (responses counted once per label)." if weight_mode == "Percentage of responses"
+                            else "has the same English translation (weights added)."))
 
     if not cloud_freqs:
         st.info("No words to display for this selection.")
@@ -1976,9 +2031,9 @@ if "results" in st.session_state:
         img = wc.to_image()
         st.image(img, use_container_width=True)
         n_drawn = len(wc.layout_)
-        metric_label = "TF-IDF" if use_tfidf else "frequency"
+        metric_label = weight_mode.lower()
         st.caption(
-            f"{n_drawn} words drawn · size = {metric_label} · colour = semantic cluster"
+            f"{n_drawn} words drawn · size = {metric_label} · colour = response co-occurrence cluster"
             + (f" · group: {group_value}" if group_value else "")
             + (" · translated to English" if render_lang != lang_code else "")
             + ("" if n_drawn >= min(max_words, len(render_freqs)) else
@@ -2026,6 +2081,8 @@ if "results" in st.session_state:
                 "word": dl(w),
                 **({"english": label_of(w) if w in drawn_src else ""} if render_lang != lang_code else {}),
                 "frequency": scope_freq.get(w, 0),
+                "responses": scope_responses.get(w, 0),
+                "response_percent": round(scope_percent.get(w, 0), 2),
                 "tfidf": round(float(scope_tfidf.get(w, 0.0)), 4) if scope_tfidf else None,
                 "cluster": f"C{cid + 1}" if cid is not None else "—",
                 "colour": color_map.get(cid, UNCLUSTERED_COLOR) if cid is not None else UNCLUSTERED_COLOR,
@@ -2063,7 +2120,7 @@ if "results" in st.session_state:
         def build_code_cloud(rows):
             a = get_analysis(product_col, code_v, rows)
             p, wfreq = a["best_p"], a["word_freq"]
-            wts = a["tfidf_scores"] if use_tfidf else {w: float(n) for w, n in wfreq.items()}
+            wts = a["tfidf_scores"] if use_tfidf else (a["response_percent"] if weight_mode == "Percentage of responses" else wfreq)
             ws = [w for w, n in wfreq.items() if n >= min_freq and (show_unclustered or w in p)]
             freqs = {w: wts.get(w, 0.0) for w in ws if wts.get(w, 0.0) > 0}
             if not freqs:
@@ -2081,6 +2138,8 @@ if "results" in st.session_state:
                         r_freqs[eng[w]] = r_freqs.get(eng[w], 0) + freqs[w]
                         if eng[w] not in src or freqs[w] > freqs[src[eng[w]]]:
                             src[eng[w]] = w
+                    r_freqs = translated_weights(rows["tokens"].tolist(), eng, freqs,
+                                                 weight_mode == "Percentage of responses")
                     r_color = lambda lab, _s=src, _c=col_of: _c(_s.get(lab, lab))
                     r_lang = "en"
             lo_, hi_ = font_range[0], max(font_range[1], font_range[0] + 1)
@@ -2093,11 +2152,20 @@ if "results" in st.session_state:
                     "product_code": code_v, "word": dl(w),
                     **({"english": eng.get(w, "")} if eng else {}),
                     "frequency": wfreq.get(w, 0),
+                    "responses": a["response_counts"].get(w, 0),
+                    "response_percent": round(a["response_percent"].get(w, 0), 2),
                     "tfidf": round(float(a["tfidf_scores"].get(w, 0.0)), 4),
                     "cluster": f"C{p[w] + 1}" if w in p else "—",
                 })
             return wc_.to_image(), out_rows
 
+        zip_settings = (res.get("run_id"), view_key, weight_mode, min_freq, min_edge, n_clusters,
+                        max_words, tuple(font_range), rel_scaling, margin, background, export_scale,
+                        canvas_choice, font_path, show_unclustered, translate_on,
+                        repr(st.session_state.get("translation_overrides")), repr(color_map), product_col)
+        if st.session_state.get("codes_zip_settings") != zip_settings:
+            st.session_state.pop("codes_zip", None)
+            st.session_state["codes_zip_settings"] = zip_settings
         if st.button("📦 Build word clouds for every code (ZIP)", use_container_width=True, key="build_codes_zip"):
             import zipfile
             codes = [TOTAL_CODES] + code_counts.index.tolist()
