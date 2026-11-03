@@ -15,6 +15,7 @@ import tempfile
 import unicodedata
 from wordcloud import WordCloud
 import matplotlib
+import urdu_rules
 from language_rules import EXTRA_STOPWORDS, lexical_or_boundary, merge_language_modifiers, vietnamese_sentence_tokens
 from text_analysis import BOUNDARY, extract_phrases, select_terms, response_statistics, translated_weights
 
@@ -56,6 +57,7 @@ LANGUAGES = {
     "Indonesian": {"code": "id", "nltk_stop": "indonesian", "spacy_model": None,              "engine": "stanza"},
     "Vietnamese": {"code": "vi", "nltk_stop": None, "spacy_model": None, "engine": "stanza"},
     "Tagalog":    {"code": "tl", "nltk_stop": None, "spacy_model": None, "engine": "spacy_blank"},
+    "Urdu":       {"code": "ur", "nltk_stop": None, "spacy_model": None, "engine": "stanza"},
     "Arabic":     {"code": "ar", "nltk_stop": "arabic",     "spacy_model": None,              "engine": "stanza"},
 }
 
@@ -220,6 +222,12 @@ for _kind, _vi, _tl in [
     ("toomuch", "quá nhiều {}", "sobrang daming {}"),
 ]:
     MOD_DISPLAY[_kind].update({"vi": _vi, "tl": _tl})
+for _kind, _label in {
+    "nottoo": "زیادہ {} نہیں", "notenough": "کافی {} نہیں",
+    "toolittle": "کافی {} نہیں", "too": "حد سے زیادہ {}",
+    "toomuch": "حد سے زیادہ {}",
+}.items():
+    MOD_DISPLAY[_kind]["ur"] = _label
 MOD_KINDS = ("nottoo", "notenough", "toolittle", "toomuch", "too", "not")
 # English wording used when the cloud is translated: (prefix, suffix)
 MOD_ENGLISH = {"nottoo": ("not too ", ""), "not": ("not ", ""), "notenough": ("not ", " enough"), "toolittle": ("not enough ", ""), "too": ("too ", ""),
@@ -514,6 +522,12 @@ _FONT_SPECS = [
     ("Sarabun (Thai)",       "thai", lambda: _first_existing(["fonts/Sarabun-Regular.ttf"]) or _find_installed_font("Sarabun")),
     ("Loma (Thai)",          "thai", lambda: _find_installed_font("Loma")),
     ("Garuda (Thai)",        "thai", lambda: _find_installed_font("Garuda")),
+    ("Noto Nastaliq Urdu", "arabic", lambda: _first_existing([
+        "fonts/NotoNastaliqUrdu-Regular.ttf", "/usr/share/fonts/truetype/noto/NotoNastaliqUrdu-Regular.ttf",
+    ]) or _find_installed_font("Noto Nastaliq Urdu")),
+    ("Arial (Urdu / Arabic, Windows)", "arabic", lambda: _first_existing([
+        os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "arial.ttf"),
+    ])),
     ("Noto Sans Arabic",     "arabic", lambda: _first_existing([
         "fonts/NotoSansArabic-Regular.ttf", "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
     ]) or _find_installed_font("Noto Sans Arabic")),
@@ -527,7 +541,7 @@ _FONT_SPECS = [
     ("Amiri (Arabic)",       "arabic", lambda: _first_existing(["fonts/Amiri-Regular.ttf"]) or _find_installed_font("Amiri")),
 ]
 
-LANG_SCRIPT = {"zh": "cjk", "ja": "cjk", "th": "thai", "ar": "arabic"}
+LANG_SCRIPT = {"zh": "cjk", "ja": "cjk", "th": "thai", "ar": "arabic", "ur": "arabic"}
 
 @st.cache_resource
 def available_fonts():
@@ -597,7 +611,7 @@ def shape_for_render(text, lang_code):
     """With libraqm, Pillow shapes Arabic and handles right-to-left itself.
     Without it, letters would come out disconnected and in the wrong order, so
     we pre-shape with arabic-reshaper + python-bidi instead."""
-    if lang_code != "ar" or pil_has_complex_layout():
+    if lang_code not in {"ar", "ur"} or pil_has_complex_layout():
         return text
     try:
         import arabic_reshaper
@@ -702,12 +716,14 @@ def load_stanza(lang_code):
     # first (Arabic needs it to split clitics), then without.
     # Vietnamese's official lemma processor is identity; only word
     # segmentation is learned here, so loading POS/character models is unnecessary.
-    processor_options = ("tokenize,lemma",) if lang_code == "vi" else ("tokenize,mwt,pos,lemma", "tokenize,pos,lemma")
+    processor_options = (("tokenize,lemma",) if lang_code == "vi" else
+                         ("tokenize,pos,lemma",) if lang_code == "ur" else
+                         ("tokenize,mwt,pos,lemma", "tokenize,pos,lemma"))
     for procs in processor_options:
         try:
             kwargs = dict(lang=lang_code, processors=procs, use_gpu=False,
                           verbose=False, download_method=dl)
-            if lang_code == "vi":
+            if lang_code in {"vi", "ur"}:
                 kwargs["package"] = "default_fast"
             if model_dir:
                 kwargs["dir"] = model_dir
@@ -756,6 +772,7 @@ def load_stopwords(nltk_lang):
         return set()
 
 DEFAULT_EXCLUSIONS_BY_LANG.update({
+    "Urdu": ["مصنوعہ", "مصنوعات", "پروڈکٹ"],
     "Vietnamese": ["sản_phẩm"],
     "Tagalog": ["produkto", "product"],
 })
@@ -770,6 +787,8 @@ MIN_LEMMA_LEN = {"zh": 1, "ja": 1, "th": 1, "ar": 1}
 
 def clean_token(tok, lang_code):
     tok = tok.lower().strip()
+    if lang_code == "ur":
+        return urdu_rules.normalize_urdu(tok)
     if lang_code == "ar":
         tok = ARABIC_DIACRITICS.sub("", tok)
     return tok
@@ -1135,7 +1154,9 @@ def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_wor
     pre_lemmas: lemmas already produced by Stanza (Arabic / Indonesian).
     neg_surfaces: optional dict collecting original wordings of negated tokens."""
     if pre_lemmas is not None:
-        if lang_code == "vi":
+        if lang_code == "ur":
+            lemmas = [urdu_rules.lexical_or_boundary(t) for t in pre_lemmas]
+        elif lang_code == "vi":
             lemmas = [lexical_or_boundary(t, lang_code) for t in pre_lemmas]
         else:
             lemmas = [clean_token(t, lang_code) for t in pre_lemmas]
@@ -1171,7 +1192,9 @@ def preprocess(text, lang_code, lemmatizer_en, spacy_nlp, custom_stops, stop_wor
             else:
                 lemmas = tokens
 
-    if lang_code in EXTRA_STOPWORDS:
+    if lang_code == "ur":
+        lemmas = urdu_rules.merge_modifiers(lemmas)
+    elif lang_code in EXTRA_STOPWORDS:
         lemmas = merge_language_modifiers(lemmas, lang_code)
     if lang_code in TOKEN_NEGATION_LANGS:
         lemmas = merge_negations(lemmas, lang_code, stop_words | custom_stops)
@@ -1253,6 +1276,8 @@ def display_label(word, lang_code=None, neg_display=None):
                     out.append(nxt + "ない")
                 elif lang_code == "zh":
                     out.append("不" + nxt)
+                elif lang_code == "ur":
+                    out.append(nxt + " نہیں")
                 else:
                     out.append(f"{NEG_DISPLAY_PREFIX.get(lang_code, 'not')} {nxt}")
             else:
@@ -1329,6 +1354,7 @@ HELSINKI_MODELS = {
     "id": ["Helsinki-NLP/opus-mt-id-en", "Helsinki-NLP/opus-mt-mul-en"],
     "vi": ["Helsinki-NLP/opus-mt-vi-en"],
     "tl": ["Helsinki-NLP/opus-mt-tl-en"],
+    "ur": ["Helsinki-NLP/opus-mt-ur-en"],
     "ar": ["Helsinki-NLP/opus-mt-ar-en", "Helsinki-NLP/opus-mt-mul-en"],
 }
 
@@ -1510,6 +1536,10 @@ with st.sidebar:
         st.caption("Tagalog uses basic tokenization and explicit negation rules. "
                    "Word forms are retained; there is no trained lemmatizer or grammar parser. "
                    "Review mixed Tagalog/English responses carefully.")
+    elif lang_info["code"] == "ur":
+        st.caption("Urdu uses Stanza tokenization and lemmatization, with local negation rules. "
+                   "Use Urdu-script responses; Roman Urdu is not supported by this pipeline. "
+                   "The model downloads on first Generate.")
     elif lang_info["code"] == "vi":
         st.caption("Vietnamese uses Stanza word segmentation and retains word forms "
                    "(its lemma processor is identity). The model downloads on first Generate.")
@@ -1663,7 +1693,7 @@ if uploaded_file and df is not None:
         thai_tok, thai_sw = (None, set())
         if engine == "thai":
             thai_tok, thai_sw, _ = load_thai()
-        stop_words = set(clean_token(w, code) for w in load_stopwords(lang_info["nltk_stop"])) | thai_sw | EXTRA_STOPWORDS.get(code, set())
+        stop_words = set(clean_token(w, code) for w in load_stopwords(lang_info["nltk_stop"])) | thai_sw | EXTRA_STOPWORDS.get(code, set()) | (urdu_rules.STOPWORDS if code == "ur" else set())
 
         stanza_nlp = None
         if engine == "stanza":

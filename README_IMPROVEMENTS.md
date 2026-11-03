@@ -1,3 +1,5 @@
+> Latest update: see README_URDU.md. Deployment now requires urdu_rules.py as well as the three earlier Python modules.
+
 # Word cloud improvements — 2 November 2026
 
 The existing project has been updated in place. This package is a portable copy.

@@ -1,3 +1,5 @@
+> Latest update: see README_URDU.md. Deployment now requires urdu_rules.py as well as the three earlier Python modules.
+
 # Vietnamese and Tagalog support
 
 Both languages are now available under **Verbatim language**.
